@@ -13,6 +13,7 @@ from ...services.lookup_service import (
     cache_remote_cover,
     get_console_image,
     lookup_upcitemdb_barcode,
+    lookup_ebay_barcode,
     lookup_combined_title,
     lookup_gametdb_title,
     lookup_igdb_title,
@@ -176,6 +177,28 @@ async def lookup_barcode(search: BarcodeLookup):
             if alt_lookup.get("results"):
                 upc_results = alt_lookup.get("results", [])
                 upc_error = alt_lookup.get("error")
+    
+    barcode_source = "upcitemdb" if upc_results else None
+    ebay_error = None
+
+    if not upc_results:
+        ebay_lookup = await lookup_ebay_barcode(normalized)
+        ebay_results = ebay_lookup.get("results", [])
+        ebay_error = ebay_lookup.get("error")
+
+        # Retry eBay with the common UPC/EAN leading-zero variant.
+        if not ebay_results and len(normalized) == 12:
+            ebay_lookup = await lookup_ebay_barcode(f"0{normalized}")
+            ebay_results = ebay_lookup.get("results", [])
+            ebay_error = ebay_lookup.get("error")
+        elif not ebay_results and len(normalized) == 13 and normalized.startswith("0"):
+            ebay_lookup = await lookup_ebay_barcode(normalized[1:])
+            ebay_results = ebay_lookup.get("results", [])
+            ebay_error = ebay_lookup.get("error")
+
+        if ebay_results:
+            upc_results = ebay_results
+            barcode_source = "ebay"
 
     title_candidates = []
     seen_titles = set()
@@ -201,7 +224,8 @@ async def lookup_barcode(search: BarcodeLookup):
     return {
         "barcode": search.barcode,
         "normalized_barcode": normalized,
-        "existing": existing_item,
+        "barcode_source": barcode_source,
+	"existing": existing_item,
         "lookup_title": lookup_title,
         "title_candidates": title_candidates,
         "suggestions": suggestions[:8],
@@ -211,6 +235,7 @@ async def lookup_barcode(search: BarcodeLookup):
             "igdb": combined_errors.get("igdb"),
             "rawg": combined_errors.get("rawg"),
             "gametdb": combined_errors.get("gametdb"),
+	    "ebay": ebay_error,
         },
     }
 
