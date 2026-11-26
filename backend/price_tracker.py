@@ -68,19 +68,14 @@ async def fetch_market_price(
     source: Optional[str] = None,
     deep_search: bool = False,
 ):
-    """Price lookup. Deep eBay queries are opt-in on the direct eBay path."""
+    """Price lookup. PriceCharting and eBay are explicit, isolated sources."""
     game = _get_game_for_price_lookup(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    ebay_enabled = all(_ebay_credentials())
-    rawg_enabled = _rawg_key() is not None
-
     item_type = game.get("item_type") or "game"
-    is_pc_supported = item_type in ("game", "console", "controller", "accessory", "funko", "comic")
-
-    if source == 'ebay':
-        if not ebay_enabled:
+    if source == "ebay":
+        if not all(_ebay_credentials()):
             return {"error": "eBay is not configured in Settings."}
         ebay = await fetch_ebay_market_price(
             game["title"],
@@ -124,114 +119,123 @@ async def fetch_market_price(
             return result
         return {"error": "No eBay listings found for this game."}
 
-    if is_pc_supported:
-        catalog = _lookup_local_catalog_price(game["title"], game.get("platform_name") or "")
-        if not catalog:
-            # Retry without platform constraint for mismatched/legacy platform labels.
-            catalog = _lookup_local_catalog_price(game["title"], "")
+    if source not in (None, "pricecharting"):
+        return {"error": "Unknown price source."}
 
-        if not catalog and game.get("alt_titles"):
-            for alt_title in _parse_alt_titles(game.get("alt_titles")):
-                if not alt_title or alt_title.strip().lower() == (game.get("title") or "").strip().lower():
-                    continue
-                catalog = _lookup_local_catalog_price(alt_title, game.get("platform_name") or "")
-                if not catalog:
-                    catalog = _lookup_local_catalog_price(alt_title, "")
+    supported_pricecharting_types = {"game", "console", "controller", "accessory", "funko", "comic"}
+    search_titles = []
+    title = str(game.get("title") or "").strip()
+    if title:
+        search_titles.append(title)
+    for alt_title in _parse_alt_titles(game.get("alt_titles")):
+        if alt_title and alt_title.strip().lower() not in {value.lower() for value in search_titles}:
+            search_titles.append(alt_title.strip())
+
+    catalog = None
+    scraped = None
+    eur_rate = None
+    platform_name = game.get("platform_name") or ""
+    if item_type in supported_pricecharting_types:
+        for search_title in search_titles:
+            for platform_hint in dict.fromkeys((platform_name, "")):
+                catalog = _lookup_local_catalog_price(search_title, platform_hint)
                 if catalog:
                     break
+            if catalog:
+                break
 
-        if catalog:
-            with get_db() as db:
+        # Always attempt a live scrape, even when the local catalog matched.
+        for search_title in search_titles:
+            scraped = await _fetch_pricecharting_scrape(search_title, platform_name)
+            if scraped:
+                break
+        if scraped:
+            eur_rate = await get_eur_rate()
+
+    candidates = []
+    if catalog:
+        candidates.append({
+            "source": "pricecharting",
+            "source_detail": "local_catalog",
+            "_history_source": "pricecharting_local",
+            "market_price": catalog["loose_eur"],
+            "condition": "loose",
+            "matched_title": catalog["product_name"],
+            "matched_platform": catalog["platform"],
+            "match_score": catalog["match_score"],
+            "_history": {
+                "loose": catalog["loose_eur"],
+                "complete": catalog["cib_eur"],
+                "new": catalog["new_eur"],
+                "eur_rate": 1.0,
+                "pricecharting_id": catalog["pricecharting_id"] or None,
+            },
+        })
+    if scraped:
+        scraped_loose = _to_eur(scraped["loose_usd"], eur_rate)
+        scraped_cib = _to_eur(scraped.get("cib_usd"), eur_rate)
+        scraped_new = _to_eur(scraped.get("new_usd"), eur_rate)
+        candidates.append({
+            "source": "pricecharting",
+            "source_detail": "live_scrape",
+            "_history_source": "pricecharting_scrape",
+            "market_price": scraped_loose,
+            "condition": "loose",
+            "matched_title": scraped.get("product_name"),
+            "_history": {
+                "loose": scraped_loose,
+                "complete": scraped_cib,
+                "new": scraped_new,
+                "eur_rate": eur_rate,
+                "pricecharting_id": scraped.get("pricecharting_id"),
+            },
+        })
+
+    if candidates:
+        # Store each provider observation separately so either selectable quote
+        # remains visible in history. Prefer the live scrape for the legacy top-level
+        # market_price field when both paths found a value.
+        primary = next(
+            (candidate for candidate in candidates if candidate["source_detail"] == "live_scrape"),
+            candidates[0],
+        )
+        with get_db() as db:
+            for candidate in candidates:
+                history = candidate["_history"]
                 db.execute(
                     """
                     INSERT INTO price_history
                         (game_id, source, loose_price, complete_price, new_price, eur_rate, pricecharting_id)
-                    VALUES (?, 'pricecharting', ?, ?, ?, 1.0, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        game_id,
-                        catalog["loose_eur"],
-                        catalog["cib_eur"],
-                        catalog["new_eur"],
-                        catalog["pricecharting_id"] or None,
-                    ),
+                    (game_id, candidate["_history_source"], history["loose"],
+                     history["complete"], history["new"], history["eur_rate"],
+                     history["pricecharting_id"]),
                 )
-                db.commit()
-            return {
-                "market_price": catalog["loose_eur"],
-                "source": "pricecharting",
-                "source_detail": "local_catalog",
-                "condition": "loose",
-                "matched_title": catalog["product_name"],
-                "matched_platform": catalog["platform"],
-                "match_score": catalog["match_score"],
-            }
+            db.commit()
 
-        eur_rate = await get_eur_rate()
+        suggestions = [
+            {key: value for key, value in candidate.items()
+             if key not in {"_history", "_history_source"}}
+            for candidate in candidates
+        ]
+        result = {
+            "market_price": primary["market_price"],
+            "source": "pricecharting",
+            "source_detail": "combined" if len(suggestions) > 1 else primary["source_detail"],
+            "condition": "loose",
+            "suggestions": suggestions,
+        }
+        for field in ("matched_title", "matched_platform", "match_score"):
+            if field in primary:
+                result[field] = primary[field]
+        return result
 
-        # Always try scraper first; token does not gate this path.
-        pc = await _fetch_pricecharting_scrape(game["title"], game.get("platform_name") or "")
-        if not pc and game.get("alt_titles"):
-            for alt_title in _parse_alt_titles(game.get("alt_titles")):
-                if not alt_title or alt_title.strip().lower() == (game.get("title") or "").strip().lower():
-                    continue
-                pc = await _fetch_pricecharting_scrape(alt_title, game.get("platform_name") or "")
-                if pc:
-                    break
-        if pc:
-            loose_eur = _to_eur(pc["loose_usd"], eur_rate)
-            cib_eur = _to_eur(pc["cib_usd"], eur_rate)
-            new_eur = _to_eur(pc["new_usd"], eur_rate)
-            with get_db() as db:
-                db.execute(
-                    """
-                    INSERT INTO price_history
-                        (game_id, source, loose_price, complete_price, new_price, eur_rate, pricecharting_id)
-                    VALUES (?, 'pricecharting', ?, ?, ?, ?, ?)
-                    """,
-                    (game_id, loose_eur, cib_eur, new_eur, eur_rate, pc["pricecharting_id"]),
-                )
-                db.commit()
-            return {
-                "market_price": loose_eur,
-                "source": "pricecharting",
-                "source_detail": "live_scrape",
-                "condition": "loose",
-            }
-
-    if ebay_enabled:
-        ebay = await fetch_ebay_market_price(game["title"], game.get("platform_name") or "", item_type)
-        if ebay:
-            with get_db() as db:
-                db.execute(
-                    """
-                    INSERT INTO price_history
-                        (game_id, source, loose_price, complete_price, new_price, eur_rate)
-                    VALUES (?, 'ebay', ?, NULL, NULL, 1.0)
-                    """,
-                    (game_id, ebay["market_price"]),
-                )
-                db.commit()
-            return {
-                "market_price": ebay["market_price"],
-                "source": "ebay",
-                "source_detail": "automatic_ebay_fallback",
-                "sample_size": ebay["sample_size"],
-                "price_min": ebay["price_min"],
-                "price_max": ebay["price_max"],
-            }
-
-    if rawg_enabled:
-        rawg = await fetch_rawg_reference(game["title"], game.get("platform_name") or "")
-        if rawg:
-            return {
-                "error": "No market price found. Set value manually.",
-                "source": "rawg",
-                "rawg_url": rawg.get("rawg_url"),
-                "store_links": rawg.get("store_links", []),
-            }
-
-    return {"error": "No market price found. Set value manually."}
+    return {
+        "source": "pricecharting",
+        "info": "PriceCharting found no price in the local catalog or live scrape. Try the eBay button.",
+        "suggested_action": "ebay",
+    }
 
 
 @router.post("/api/games/{game_id}/price-check")
@@ -249,7 +253,7 @@ async def get_price_history(game_id: int):
             """
             SELECT * FROM price_history
             WHERE game_id = ?
-            ORDER BY fetched_at DESC
+            ORDER BY fetched_at DESC, id DESC
             LIMIT 20
             """,
             (game_id,),

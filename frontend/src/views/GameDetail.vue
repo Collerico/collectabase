@@ -292,10 +292,16 @@
           </div>
           <div v-if="latestPrice" class="price-meta mt-2">
             Last checked: {{ formatDate(latestPrice.fetched_at) }}
-            <span :class="`source-pill source-${latestPrice.source}`">{{ latestPrice.source }}</span>
+            <span :class="`source-pill ${priceSourceClass(latestPrice.source)}`">{{ priceSourceLabel(latestPrice.source) }}</span>
           </div>
 
           <div v-if="priceError" class="price-error mt-2">{{ priceError }}</div>
+          <div v-if="priceInfo" class="price-info-bubble mt-2" role="status">
+            <span>ℹ️ {{ priceInfo }}</span>
+            <button v-if="priceInfoAction === 'ebay'" class="btn btn-secondary btn-sm" @click="checkPriceEbay" :disabled="priceLoading">
+              Try eBay
+            </button>
+          </div>
           <div v-if="priceError" class="price-catalog-help mt-1">
             <button class="btn btn-secondary btn-sm" @click="openPriceBrowserSearch">
               🔎 Select from Price Catalog
@@ -310,30 +316,36 @@
             <button class="btn btn-secondary btn-sm" @click="editStartValue">Update Base Line</button>
           </div>
 
-          <div v-if="marketSuggestion" class="market-suggestion mt-2">
-            <div v-if="marketSuggestion.source === 'pricecharting'" class="market-suggestion-text">
-              📊 €{{ formatMoney(marketSuggestion.market_price) }}
-              (PriceCharting{{ marketSuggestion.source_detail === 'local_catalog' ? ' · local catalog' : marketSuggestion.source_detail === 'live_scrape' ? ' · live scrape' : '' }} - Loose)
-              <div v-if="marketSuggestion.matched_title" class="market-match">
-                Match: {{ marketSuggestion.matched_title }}
-                <span v-if="marketSuggestion.matched_platform"> ({{ marketSuggestion.matched_platform }})</span>
-                <span v-if="marketSuggestion.match_score != null"> · confidence {{ formatMatchScore(marketSuggestion.match_score) }}</span>
+          <div v-if="marketSuggestions.length" class="market-suggestions mt-2">
+            <div
+              v-for="suggestion in marketSuggestions"
+              :key="`${suggestion.source}-${suggestion.source_detail || 'unknown'}`"
+              class="market-suggestion mt-2"
+            >
+              <div v-if="suggestion.source === 'pricecharting'" class="market-suggestion-text">
+                📊 €{{ formatMoney(suggestion.market_price) }}
+                (PriceCharting{{ suggestion.source_detail === 'local_catalog' ? ' · local catalog' : suggestion.source_detail === 'live_scrape' ? ' · live scrape' : '' }} - Loose)
+                <div v-if="suggestion.matched_title" class="market-match">
+                  Match: {{ suggestion.matched_title }}
+                  <span v-if="suggestion.matched_platform"> ({{ suggestion.matched_platform }})</span>
+                  <span v-if="suggestion.match_score != null"> · confidence {{ formatMatchScore(suggestion.match_score) }}</span>
+                </div>
               </div>
-            </div>
-            <div v-else-if="marketSuggestion.source === 'ebay'" class="market-suggestion-text">
-              🛒 ~€{{ formatMoney(marketSuggestion.market_price) }}
-              <span v-if="marketSuggestion.source_detail === 'automatic_ebay_fallback'">(Automatic lookup used eBay fallback · median of {{ marketSuggestion.sample_size }} listings, €{{ formatMoney(marketSuggestion.price_min) }}-€{{ formatMoney(marketSuggestion.price_max) }})</span>
-              <span v-else-if="marketSuggestion.source_detail === 'direct_ebay'">(Direct eBay search · median of {{ marketSuggestion.sample_size }} listings, €{{ formatMoney(marketSuggestion.price_min) }}-€{{ formatMoney(marketSuggestion.price_max) }})</span>
-              <span v-else>(eBay listings · median of {{ marketSuggestion.sample_size }} listings, €{{ formatMoney(marketSuggestion.price_min) }}-€{{ formatMoney(marketSuggestion.price_max) }})</span>
-            </div>
-            <div v-if="marketSuggestion.search_complete === false" class="deep-search-warning" role="alert">
-              Partial estimate: {{ marketSuggestion.failed_searches }} request(s) failed, {{ marketSuggestion.skipped_searches }} were skipped, and {{ marketSuggestion.truncated_searches }} query(ies) had more pages not fetched. Only returned listings were used.
-            </div>
-            <div class="market-suggestion-actions mt-2">
-              <button class="btn btn-primary btn-sm" @click="setMarketSuggestionAsCurrentValue" :disabled="settingSuggestedValue">
-                {{ settingSuggestedValue ? 'Saving...' : 'Set as current value' }}
-              </button>
-              <button class="btn btn-secondary btn-sm" @click="dismissMarketSuggestion">Dismiss</button>
+              <div v-else-if="suggestion.source === 'ebay'" class="market-suggestion-text">
+                🛒 ~€{{ formatMoney(suggestion.market_price) }}
+                <span v-if="suggestion.source_detail === 'automatic_ebay_fallback'">(Automatic lookup used eBay fallback · median of {{ suggestion.sample_size }} listings, €{{ formatMoney(suggestion.price_min) }}-€{{ formatMoney(suggestion.price_max) }})</span>
+                <span v-else-if="suggestion.source_detail === 'direct_ebay'">(Direct eBay search · median of {{ suggestion.sample_size }} listings, €{{ formatMoney(suggestion.price_min) }}-€{{ formatMoney(suggestion.price_max) }})</span>
+                <span v-else>(eBay listings · median of {{ suggestion.sample_size }} listings, €{{ formatMoney(suggestion.price_min) }}-€{{ formatMoney(suggestion.price_max) }})</span>
+              </div>
+              <div v-if="suggestion.search_complete === false" class="deep-search-warning" role="alert">
+                Partial estimate: {{ suggestion.failed_searches }} request(s) failed, {{ suggestion.skipped_searches }} were skipped, and {{ suggestion.truncated_searches }} query(ies) had more pages not fetched. Only returned listings were used.
+              </div>
+              <div class="market-suggestion-actions mt-2">
+                <button class="btn btn-primary btn-sm" @click="setMarketSuggestionAsCurrentValue(suggestion)" :disabled="settingSuggestedValue">
+                  {{ settingSuggestedValue ? 'Saving...' : 'Set as current value' }}
+                </button>
+                <button class="btn btn-secondary btn-sm" @click="dismissMarketSuggestion(suggestion)">Dismiss</button>
+              </div>
             </div>
           </div>
 
@@ -402,7 +414,7 @@
               >
                 <div class="price-history-main">
                   <span class="text-xs text-muted">{{ formatDate(entry.fetched_at) }}</span>
-                  <span :class="`source-pill source-${entry.source} text-xs ml-2`">{{ entry.source }}</span>
+                  <span :class="`source-pill ${priceSourceClass(entry.source)} text-xs ml-2`">{{ priceSourceLabel(entry.source) }}</span>
                   <span class="ml-auto text-sm font-semibold">{{ entryDisplayValue(entry) }}</span>
                 </div>
                 <button
@@ -482,7 +494,9 @@ const priceLoading = ref(false)
 const deepEbaySearch = ref(false)
 const priceHistory = ref([])
 const priceError = ref('')
-const marketSuggestion = ref(null)
+const marketSuggestions = ref([])
+const priceInfo = ref('')
+const priceInfoAction = ref('')
 const rawgReference = ref(null)
 const settingSuggestedValue = ref(false)
 const priceChartEl = ref(null)
@@ -654,8 +668,7 @@ function buildChart() {
               const idx = items[0]?.dataIndex
               if (idx == null) return []
               const src = ordered[idx]?.source || ''
-              const labels = { pricecharting: '📊 PriceCharting', manual: '✏️ Manual', ebay: '🛒 eBay', 'Start Value': '💰 Start Value' }
-              return [labels[src] || src]
+              return [`Source: ${priceSourceLabel(src)}`]
             }
           }
         }
@@ -733,6 +746,22 @@ function formatMoney(value) {
   return Number.isFinite(num) ? num.toFixed(2) : '0.00'
 }
 
+function priceSourceLabel(source) {
+  const labels = {
+    pricecharting: 'PriceCharting',
+    pricecharting_local: 'PriceCharting · local catalog',
+    pricecharting_scrape: 'PriceCharting · live scrape',
+    ebay: 'eBay',
+    manual: 'Manual',
+    'Start Value': 'Start Value'
+  }
+  return labels[source] || String(source || 'Unknown')
+}
+
+function priceSourceClass(source) {
+  return String(source || '').startsWith('pricecharting_') ? 'source-pricecharting' : `source-${source}`
+}
+
 function formatMatchScore(value) {
   const num = Number(value)
   if (!Number.isFinite(num)) return 'n/a'
@@ -752,17 +781,22 @@ function entryDisplayValue(entry) {
 async function checkPrice() {
   priceLoading.value = true
   priceError.value = ''
-  marketSuggestion.value = null
+  marketSuggestions.value = []
+  priceInfo.value = ''
+  priceInfoAction.value = ''
   rawgReference.value = null
   try {
-    const res = await priceApi.check(route.params.id)
+    const res = await priceApi.check(route.params.id, 'pricecharting')
     const data = res.data || {}
     if (!res.ok) {
       priceError.value = data?.detail?.message || data?.detail || data?.error || 'Price check failed'
       notifyError(priceError.value)
       return
     }
-    if (data.error) {
+    if (data.info) {
+      priceInfo.value = data.info
+      priceInfoAction.value = data.suggested_action || ''
+    } else if (data.error) {
       if (data.source === 'rawg') {
         priceError.value = data.error
         rawgReference.value = data
@@ -770,7 +804,9 @@ async function checkPrice() {
         priceError.value = data.error
       }
     } else {
-      marketSuggestion.value = data
+      marketSuggestions.value = Array.isArray(data.suggestions) && data.suggestions.length
+        ? data.suggestions
+        : [data]
       await loadPriceHistory()
     }
 } catch (e) {
@@ -785,7 +821,9 @@ async function checkPrice() {
 async function checkPriceEbay() {
   priceLoading.value = true
   priceError.value = ''
-  marketSuggestion.value = null
+  marketSuggestions.value = []
+  priceInfo.value = ''
+  priceInfoAction.value = ''
   rawgReference.value = null
   try {
     const res = await priceApi.check(route.params.id, 'ebay', { deepSearch: deepEbaySearch.value })
@@ -798,7 +836,9 @@ async function checkPriceEbay() {
     if (data.error) {
       priceError.value = data.error
     } else {
-      marketSuggestion.value = data
+      marketSuggestions.value = Array.isArray(data.suggestions) && data.suggestions.length
+        ? data.suggestions
+        : [data]
       await loadPriceHistory()
     }
   } catch (e) {
@@ -810,9 +850,9 @@ async function checkPriceEbay() {
   }
 }
 
-async function setMarketSuggestionAsCurrentValue() {
-  if (!marketSuggestion.value || !game.value) return
-  const marketPrice = Number(marketSuggestion.value.market_price)
+async function setMarketSuggestionAsCurrentValue(suggestion) {
+  if (!suggestion || !game.value) return
+  const marketPrice = Number(suggestion.market_price)
   if (!Number.isFinite(marketPrice)) return
 
   settingSuggestedValue.value = true
@@ -821,7 +861,7 @@ async function setMarketSuggestionAsCurrentValue() {
     if (res.ok) {
       game.value.current_value = marketPrice
       startValue.value = marketPrice
-      marketSuggestion.value = null
+      marketSuggestions.value = []
       notifySuccess('Current value updated.')
     } else {
       const detail = res.data?.detail
@@ -835,8 +875,10 @@ async function setMarketSuggestionAsCurrentValue() {
   }
 }
 
-function dismissMarketSuggestion() {
-  marketSuggestion.value = null
+function dismissMarketSuggestion(suggestion) {
+  marketSuggestions.value = suggestion
+    ? marketSuggestions.value.filter(item => item !== suggestion)
+    : []
 }
 
 async function editStartValue() {
@@ -2205,5 +2247,17 @@ onMounted(async () => {
   margin: 0.35rem 0 0 1.6rem;
   color: var(--warning, #b45309);
   font-size: 0.85rem;
+}
+
+.price-info-bubble {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 </style>
