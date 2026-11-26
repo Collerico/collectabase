@@ -26,9 +26,13 @@ Common examples:
 
 The marketplace setting is separate from the eBay API credentials. Configure
 the eBay Client ID and Client Secret in Collectabase Settings. Price estimates
-use the item's EUR price only; shipping is not included in this search-improvement
-release. Item prices without a valid EUR currency are excluded and foreign
-currencies are not converted.
+use only the item's EUR price by default. A separate, off-by-default option in
+Settings can include the lowest valid EUR shipping option; if eBay does not
+provide one, the item's price remains usable and the unknown shipping status is
+logged. The destination country follows the selected marketplace, so no CAP is
+requested. Without a postcode, eBay may omit a calculated shipping amount; the
+estimate then falls back to the item price. Item prices without a valid EUR
+currency are excluded and foreign currencies are not converted.
 
 Each price lookup currently reads one Browse API search page, with up to 200
 results. The diagnostics log includes the returned count and page limit; matches

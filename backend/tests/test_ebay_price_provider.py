@@ -4,13 +4,16 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 ebay = None
+settings_routes = None
 
 
 def setUpModule():
-    global ebay
+    global ebay, settings_routes
+    from backend.api.routes import settings as settings_module
     from backend.services.price.providers import ebay as ebay_module
 
     ebay = ebay_module
+    settings_routes = settings_module
 
 
 class _Response:
@@ -40,10 +43,12 @@ class _Client:
 
 
 class EbayPriceProviderTests(unittest.TestCase):
-    def _search(self, item, *, marketplace=None, item_type="game"):
-        return self._search_items([item], marketplace=marketplace, item_type=item_type)
+    def _search(self, item, *, marketplace=None, item_type="game", include_shipping=False):
+        return self._search_items(
+            [item], marketplace=marketplace, item_type=item_type, include_shipping=include_shipping
+        )
 
-    def _search_items(self, items, *, marketplace=None, item_type="game"):
+    def _search_items(self, items, *, marketplace=None, item_type="game", include_shipping=False):
         captured = {}
         response = _Response({"itemSummaries": items})
         client = _Client(response, captured)
@@ -52,6 +57,11 @@ class EbayPriceProviderTests(unittest.TestCase):
             patch.dict(os.environ, env),
             patch.object(ebay, "get_ebay_token", new=AsyncMock(return_value="test-token")),
             patch.object(ebay.httpx, "AsyncClient", return_value=client),
+            patch.object(
+                ebay,
+                "get_app_meta_many",
+                return_value={"ebay_include_shipping": "1" if include_shipping else "0"},
+            ),
         ):
             result = asyncio.run(
                 ebay.fetch_ebay_market_price(
@@ -66,6 +76,74 @@ class EbayPriceProviderTests(unittest.TestCase):
             template, *arguments = call.args
             messages.append(template % tuple(arguments) if arguments else template)
         return " ".join(messages)
+
+    def test_shipping_toggle_setting_is_saved_as_explicit_boolean(self):
+        payload = settings_routes.SecretsUpdate(ebay_include_shipping=True)
+
+        with patch.object(settings_routes, "set_app_meta") as set_app_meta:
+            result = asyncio.run(settings_routes.update_secrets(payload, _admin=None))
+
+        self.assertIn("ebay_include_shipping", result["updated"])
+        set_app_meta.assert_called_once_with("ebay_include_shipping", "1")
+
+    def test_shipping_toggle_adds_lowest_valid_eur_cost(self):
+        item = {
+            "title": "The Legend of Zelda Breath of the Wild Nintendo Switch",
+            "conditionId": "2750",
+            "price": {"value": "40.00", "currency": "EUR"},
+            "shippingOptions": [
+                {"shippingCost": {"value": "8.00", "currency": "EUR"}},
+                {"shippingCost": {"value": "4.90", "currency": "EUR"}},
+            ],
+        }
+
+        result, captured = self._search(item, marketplace="EBAY_GB", include_shipping=True)
+
+        self.assertEqual(result["market_price"], 44.9)
+        self.assertEqual(captured["headers"]["X-EBAY-C-MARKETPLACE-ID"], "EBAY_GB")
+        self.assertNotIn("X-EBAY-C-ENDUSERCTX", captured["headers"])
+
+    def test_shipping_toggle_falls_back_to_item_price_when_cost_is_not_eur(self):
+        item = {
+            "title": "The Legend of Zelda Breath of the Wild Nintendo Switch",
+            "conditionId": "2750",
+            "price": {"value": "40.00", "currency": "EUR"},
+            "shippingOptions": [{"shippingCost": {"value": "5.00", "currency": "USD"}}],
+        }
+
+        with patch.object(ebay.logger, "info") as log_info:
+            result, _captured = self._search(item, include_shipping=True)
+
+        self.assertEqual(result["market_price"], 40.0)
+        self.assertIn("shipping_currency_unconverted:1", self._log_text(log_info))
+
+    def test_enabled_shipping_cost_of_zero_is_treated_as_free(self):
+        item = {
+            "title": "The Legend of Zelda Breath of the Wild Nintendo Switch",
+            "conditionId": "2750",
+            "price": {"value": "40.00", "currency": "EUR"},
+            "shippingOptions": [{"shippingCost": {"value": "0.00", "currency": "EUR"}}],
+        }
+
+        with patch.object(ebay.logger, "info") as log_info:
+            result, _captured = self._search(item, include_shipping=True)
+
+        self.assertEqual(result["market_price"], 40.0)
+        self.assertIn("shipping_free:1", self._log_text(log_info))
+
+    def test_enabled_shipping_missing_falls_back_to_item_price(self):
+        item = {
+            "title": "The Legend of Zelda Breath of the Wild Nintendo Switch",
+            "conditionId": "2750",
+            "price": {"value": "40.00", "currency": "EUR"},
+            "shippingOptions": [],
+        }
+
+        with patch.object(ebay.logger, "info") as log_info:
+            result, _captured = self._search(item, include_shipping=True)
+
+        self.assertEqual(result["market_price"], 40.0)
+        self.assertIn("shipping_missing:1", self._log_text(log_info))
 
     def test_price_estimate_ignores_shipping_by_default(self):
         item = {
