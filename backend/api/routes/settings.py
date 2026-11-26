@@ -39,6 +39,7 @@ class SecretsUpdate(BaseModel):
     igdb_client_secret: str | None = None
     ebay_client_id: str | None = None
     ebay_client_secret: str | None = None
+    ebay_include_shipping: bool | None = None
     rawg_api_key: str | None = None
     pricecharting_token: str | None = None
     clear: list[str] = Field(default_factory=list)
@@ -226,6 +227,7 @@ async def settings_info():
             "last_auto_backup_at",
             "last_auto_backup_name",
             "last_auto_backup_error",
+            "ebay_include_shipping",
         ]
     )
     
@@ -260,6 +262,7 @@ async def settings_info():
         "ebay_configured": bool(ebay_client_id and ebay_client_secret),
         "ebay_client_id_set": bool(ebay_client_id),
         "ebay_client_secret_set": bool(ebay_client_secret),
+        "ebay_include_shipping": str(_meta_value("ebay_include_shipping", "0")).strip().lower() in {"1", "true", "yes", "on"},
         "rawg_configured": bool(rawg_key),
         "total_items": total_items,
         "game_items": game_items,
@@ -320,6 +323,10 @@ async def update_secrets(payload: SecretsUpdate, _admin: None = Depends(require_
             continue
         set_app_meta(_SECRET_FIELDS[field], str(raw).strip())
         updated.append(field)
+
+    if payload.ebay_include_shipping is not None:
+        set_app_meta("ebay_include_shipping", "1" if payload.ebay_include_shipping else "0")
+        updated.append("ebay_include_shipping")
 
     for field in payload.clear:
         key = str(field or "").strip().lower()

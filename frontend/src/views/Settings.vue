@@ -145,6 +145,12 @@
             </span>
           </div>
           <div class="info-item">
+            <label>Shipping in price estimates</label>
+            <span :class="info.ebay_include_shipping ? 'status-ok' : 'status-warn'">
+              {{ info.ebay_include_shipping ? 'Included when available' : 'Off (default)' }}
+            </span>
+          </div>
+          <div class="info-item">
             <label>RAWG</label>
             <span :class="info.rawg_configured ? 'status-ok' : 'status-warn'">
               {{ info.rawg_configured ? 'Configured' : 'API key missing' }}
@@ -194,6 +200,13 @@
             <label class="clear-check"><input v-model="secretsForm.clear_ebay_client_secret" type="checkbox" /> Clear stored value</label>
           </div>
           <div class="form-group mb-0">
+            <label>eBay price estimate</label>
+            <label class="clear-check">
+              <input v-model="secretsForm.ebay_include_shipping" type="checkbox" /> Include shipping when available
+            </label>
+            <p class="text-muted mt-2">Off by default. When enabled, the lowest valid EUR shipping option is added. If shipping is missing or unusable, the item price is used. Destination country follows the selected eBay marketplace (for example EBAY_IT, EBAY_GB, or EBAY_US); no CAP is required.</p>
+          </div>
+          <div class="form-group mb-0">
             <label>RAWG API Key</label>
             <input v-model.trim="secretsForm.rawg_api_key" type="password" autocomplete="new-password" placeholder="Leave empty to keep current value" />
             <label class="clear-check"><input v-model="secretsForm.clear_rawg_api_key" type="checkbox" /> Clear stored value</label>
@@ -206,7 +219,7 @@
         </div>
         <div class="secret-actions mt-2">
           <button @click="saveSecrets" class="btn btn-primary" :disabled="secretsSaving">
-            {{ secretsSaving ? 'Saving…' : 'Save Credentials' }}
+            {{ secretsSaving ? 'Saving…' : 'Save Provider Settings' }}
           </button>
         </div>
       </section>
@@ -483,6 +496,7 @@ const secretsForm = ref({
   igdb_client_secret: '',
   ebay_client_id: '',
   ebay_client_secret: '',
+  ebay_include_shipping: false,
   rawg_api_key: '',
   pricecharting_token: '',
   clear_igdb_client_id: false,
@@ -549,6 +563,7 @@ function resetSecretsForm() {
     igdb_client_secret: '',
     ebay_client_id: '',
     ebay_client_secret: '',
+    ebay_include_shipping: false,
     rawg_api_key: '',
     pricecharting_token: '',
     clear_igdb_client_id: false,
@@ -579,8 +594,14 @@ async function saveSecrets() {
     }
   }
 
+  const includeShipping = Boolean(secretsForm.value.ebay_include_shipping)
+  if (includeShipping !== Boolean(info.value.ebay_include_shipping)) {
+    payload.ebay_include_shipping = includeShipping
+    changed = true
+  }
+
   if (!changed) {
-    notifyError('No credential changes to save.')
+    notifyError('No provider setting changes to save.')
     return
   }
 
@@ -589,15 +610,15 @@ async function saveSecrets() {
     const res = await settingsApi.updateSecrets(payload)
     if (!res.ok) {
       const detail = res.data?.detail
-      notifyError(detail?.message || detail || 'Failed to save credentials.')
+      notifyError(detail?.message || detail || 'Failed to save provider settings.')
       return
     }
-    notifySuccess('Credentials saved server-side.')
+    notifySuccess('Provider settings saved server-side.')
     resetSecretsForm()
     await loadInfo()
   } catch (e) {
-    console.error('Save credentials failed:', e)
-    notifyError('Failed to save credentials.')
+    console.error('Save provider settings failed:', e)
+    notifyError('Failed to save provider settings.')
   } finally {
     secretsSaving.value = false
   }
@@ -690,6 +711,7 @@ async function loadInfo() {
     const res = await settingsApi.info()
     if (res.ok) {
       info.value = res.data
+      secretsForm.value.ebay_include_shipping = Boolean(res.data.ebay_include_shipping)
       schedulerInterval.value = res.data.scheduler_interval || 0
       autoBackupEnabled.value = res.data.auto_backup_enabled !== false
       autoBackupRetention.value = res.data.auto_backup_retention || 14

@@ -9,6 +9,7 @@ from typing import Optional
 
 import httpx
 
+from ....database import get_app_meta_many
 from ..utils import _env_any, _trim_outliers_and_median
 
 _EBAY_TOKEN_CACHE = {"token": None, "expires_at": 0.0}
@@ -98,6 +99,43 @@ def _condition_ids_for_item_type(item_type: str) -> set[str]:
     if kind in {"console", "controller", "accessory"}:
         return {"1000", "1500", "2000", "2010", "2020", "2030", "2500", "2750", "3000"}
     return {"2750", "3000"}
+
+
+def _ebay_shipping_enabled() -> bool:
+    meta = get_app_meta_many(["ebay_include_shipping"])
+    value = str(meta.get("ebay_include_shipping", "0")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _shipping_price(item) -> tuple[Optional[float], str]:
+    """Return the cheapest valid EUR shipping amount and a diagnostic status."""
+    options = item.get("shippingOptions")
+    if not isinstance(options, list) or not options:
+        return None, "shipping_missing"
+
+    valid_prices = []
+    option_reasons = Counter()
+    for option in options:
+        shipping = option.get("shippingCost") if isinstance(option, dict) else None
+        value, reason = _amount_eur(shipping)
+        if reason != "ok":
+            option_reasons[reason] += 1
+            continue
+        if value < 0:
+            option_reasons["invalid"] += 1
+            continue
+        valid_prices.append(value)
+
+    if valid_prices:
+        price = min(valid_prices)
+        return price, "shipping_free" if price == 0 else "shipping_included"
+    if option_reasons["currency_unconverted"]:
+        return None, "shipping_currency_unconverted"
+    if option_reasons["currency_unknown"]:
+        return None, "shipping_currency_unknown"
+    if option_reasons["invalid"]:
+        return None, "shipping_cost_invalid"
+    return None, "shipping_cost_missing"
 
 
 def _amount_eur(amount) -> tuple[Optional[float], str]:
@@ -192,8 +230,10 @@ async def fetch_ebay_market_price(title: str, platform_name: str, item_type: str
             items = []
 
         exclusions = Counter()
+        shipping_status = Counter()
         prices: list[float] = []
         accepted_conditions = _condition_ids_for_item_type(item_type_lower)
+        include_shipping = _ebay_shipping_enabled()
 
         for item in items:
             if not isinstance(item, dict):
@@ -221,12 +261,18 @@ async def fetch_ebay_market_price(title: str, platform_name: str, item_type: str
                 exclusions["price_invalid"] += 1
                 continue
 
-            prices.append(item_price)
+            if include_shipping:
+                shipping_cost, shipping_reason = _shipping_price(item)
+                shipping_status[shipping_reason] += 1
+                prices.append(item_price + shipping_cost if shipping_cost is not None else item_price)
+            else:
+                shipping_status["disabled"] += 1
+                prices.append(item_price)
 
         median_price, trimmed, min_price, max_price = _trim_outliers_and_median(prices)
         used_count = len(trimmed)
         logger.info(
-            "eBay price search diagnostics marketplace=%s api_returned=%d api_page_limit=%s eligible=%d used=%d trimmed_outliers=%d exclusions=%s",
+            "eBay price search diagnostics marketplace=%s api_returned=%d api_page_limit=%s eligible=%d used=%d trimmed_outliers=%d exclusions=%s shipping_enabled=%s shipping=%s",
             marketplace_id,
             len(items),
             params["limit"],
@@ -234,6 +280,8 @@ async def fetch_ebay_market_price(title: str, platform_name: str, item_type: str
             used_count,
             max(len(prices) - used_count, 0),
             ",".join(f"{reason}:{count}" for reason, count in sorted(exclusions.items())) or "none",
+            include_shipping,
+            ",".join(f"{reason}:{count}" for reason, count in sorted(shipping_status.items())) or "none",
         )
         if median_price is None:
             return None

@@ -202,9 +202,25 @@ class ApiSmokeTest(unittest.TestCase):
         r = self.client.get("/api/settings/info")
         self.assertEqual(r.status_code, 200)
         self.assertIn("version", r.json())
+        self.assertIn("ebay_include_shipping", r.json())
+        self.assertFalse(r.json()["ebay_include_shipping"])
 
         r = self.client.delete(f"/api/games/{game_id}")
         self.assertEqual(r.status_code, 200)
+
+    def test_ebay_shipping_toggle_is_saved_and_defaults_off(self):
+        info = self.client.get("/api/settings/info")
+        self.assertEqual(info.status_code, 200)
+        self.assertFalse(info.json()["ebay_include_shipping"])
+
+        enabled = self.client.post("/api/settings/secrets", json={"ebay_include_shipping": True})
+        self.assertEqual(enabled.status_code, 200)
+        self.assertIn("ebay_include_shipping", enabled.json()["updated"])
+        self.assertTrue(self.client.get("/api/settings/info").json()["ebay_include_shipping"])
+
+        disabled = self.client.post("/api/settings/secrets", json={"ebay_include_shipping": False})
+        self.assertEqual(disabled.status_code, 200)
+        self.assertFalse(self.client.get("/api/settings/info").json()["ebay_include_shipping"])
 
     def test_404_for_missing_game(self):
         r = self.client.get("/api/games/999999")
