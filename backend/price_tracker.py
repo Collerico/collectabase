@@ -42,9 +42,33 @@ def _get_game_for_price_lookup(game_id: int):
     return dict_from_row(row) if row else None
 
 
+def _ebay_search_details(game: dict) -> dict:
+    """Return product-only attributes safe to send to the eBay search provider."""
+    return {
+        "alt_titles": _parse_alt_titles(game.get("alt_titles")),
+        "region": game.get("region"),
+        "barcode": game.get("barcode"),
+        "release_date": game.get("release_date"),
+        "condition": game.get("condition"),
+        "completeness": game.get("completeness"),
+        "publisher": game.get("publisher"),
+        "developer": game.get("developer"),
+        "genre": game.get("genre"),
+        "series_name": game.get("series_name"),
+        "character_name": game.get("character_name"),
+        "scale": game.get("scale"),
+        "funko_number": game.get("funko_number"),
+        "vinyl_format": game.get("vinyl_format"),
+    }
+
+
 @router.post("/api/games/{game_id}/fetch-market-price")
-async def fetch_market_price(game_id: int, source: Optional[str] = None):
-    """Primary source: PriceCharting scraper. Fallback: eBay Browse."""
+async def fetch_market_price(
+    game_id: int,
+    source: Optional[str] = None,
+    deep_search: bool = False,
+):
+    """Price lookup. Deep eBay queries are opt-in on the direct eBay path."""
     game = _get_game_for_price_lookup(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -58,7 +82,21 @@ async def fetch_market_price(game_id: int, source: Optional[str] = None):
     if source == 'ebay':
         if not ebay_enabled:
             return {"error": "eBay is not configured in Settings."}
-        ebay = await fetch_ebay_market_price(game["title"], game.get("platform_name") or "", item_type)
+        ebay = await fetch_ebay_market_price(
+            game["title"],
+            game.get("platform_name") or "",
+            item_type,
+            deep_search=deep_search,
+            search_details=_ebay_search_details(game) if deep_search else None,
+        )
+        if ebay and ebay.get("error"):
+            return {
+                "error": ebay["error"],
+                "search_complete": ebay.get("search_complete", False),
+                "failed_searches": ebay.get("failed_searches", 0),
+                "skipped_searches": ebay.get("skipped_searches", 0),
+                "truncated_searches": ebay.get("truncated_searches", 0),
+            }
         if ebay:
             with get_db() as db:
                 db.execute(
@@ -70,13 +108,19 @@ async def fetch_market_price(game_id: int, source: Optional[str] = None):
                     (game_id, ebay["market_price"]),
                 )
                 db.commit()
-            return {
+            result = {
                 "market_price": ebay["market_price"],
                 "source": "ebay",
                 "sample_size": ebay["sample_size"],
                 "price_min": ebay["price_min"],
                 "price_max": ebay["price_max"],
             }
+            if "search_complete" in ebay:
+                result["search_complete"] = ebay["search_complete"]
+                result["failed_searches"] = ebay.get("failed_searches", 0)
+                result["skipped_searches"] = ebay.get("skipped_searches", 0)
+                result["truncated_searches"] = ebay.get("truncated_searches", 0)
+            return result
         return {"error": "No eBay listings found for this game."}
 
     if is_pc_supported:
@@ -183,9 +227,10 @@ async def fetch_market_price(game_id: int, source: Optional[str] = None):
 
 
 @router.post("/api/games/{game_id}/price-check")
-async def check_price(game_id: int):
-    """Backward-compatible alias."""
-    return await fetch_market_price(game_id)
+async def check_price(game_id: int, deep_search: bool = False):
+    """Backward-compatible alias; deep search explicitly selects eBay."""
+    source = "ebay" if deep_search else None
+    return await fetch_market_price(game_id, source=source, deep_search=deep_search)
 
 
 @router.get("/api/games/{game_id}/price-history")

@@ -266,6 +266,15 @@
               </button>
             </div>
           </div>
+          <div class="deep-search-option">
+            <label class="deep-search-label">
+              <input v-model="deepEbaySearch" type="checkbox" :disabled="priceLoading" />
+              Deep eBay search
+            </label>
+            <p v-if="deepEbaySearch" class="deep-search-warning" role="status">
+              Uses saved product attributes and barcode in extra searches. It can take up to 35 seconds and still return few usable results or false positives.
+            </p>
+          </div>
 
           <div v-if="latestPrice" class="price-cells">
             <div class="price-cell" :class="{ relevant: relevantKey() === 'loose' }">
@@ -313,6 +322,9 @@
             <div v-else-if="marketSuggestion.source === 'ebay'" class="market-suggestion-text">
               🛒 ~€{{ formatMoney(marketSuggestion.market_price) }}
               (Median of {{ marketSuggestion.sample_size }} eBay listings, €{{ formatMoney(marketSuggestion.price_min) }}-€{{ formatMoney(marketSuggestion.price_max) }})
+            </div>
+            <div v-if="marketSuggestion.search_complete === false" class="deep-search-warning" role="alert">
+              Partial estimate: {{ marketSuggestion.failed_searches }} request(s) failed, {{ marketSuggestion.skipped_searches }} were skipped, and {{ marketSuggestion.truncated_searches }} query(ies) had more pages not fetched. Only returned listings were used.
             </div>
             <div class="market-suggestion-actions mt-2">
               <button class="btn btn-primary btn-sm" @click="setMarketSuggestionAsCurrentValue" :disabled="settingSuggestedValue">
@@ -464,6 +476,7 @@ const game = ref(null)
 const loading = ref(true)
 const enriching = ref(false)
 const priceLoading = ref(false)
+const deepEbaySearch = ref(false)
 const priceHistory = ref([])
 const priceError = ref('')
 const marketSuggestion = ref(null)
@@ -772,7 +785,7 @@ async function checkPriceEbay() {
   marketSuggestion.value = null
   rawgReference.value = null
   try {
-    const res = await priceApi.check(route.params.id, 'ebay')
+    const res = await priceApi.check(route.params.id, 'ebay', { deepSearch: deepEbaySearch.value })
     const data = res.data || {}
     if (!res.ok) {
       priceError.value = data?.detail?.message || data?.detail || data?.error || 'eBay price check failed'
@@ -2173,5 +2186,21 @@ onMounted(async () => {
   .price-history-row .btn {
     width: 100%;
   }
+}
+
+.deep-search-option {
+  margin: 0.25rem 0 0.75rem;
+  font-size: 0.9rem;
+}
+.deep-search-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+}
+.deep-search-warning {
+  margin: 0.35rem 0 0 1.6rem;
+  color: var(--warning, #b45309);
+  font-size: 0.85rem;
 }
 </style>
