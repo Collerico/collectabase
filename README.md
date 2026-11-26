@@ -202,7 +202,7 @@ MIT License. Built with ❤️ for collectors.
 
 ## Support the project
 
-If Collectabase is useful to you and you want to support development, you can support the project here:
+If Collectabase is useful to you and you want to support development, you can support the original project's creator here:
 
 ☕ Ko-fi: https://ko-fi.com/thedachlatte007
 
