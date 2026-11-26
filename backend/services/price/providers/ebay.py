@@ -1,13 +1,18 @@
 import base64
+import logging
+import math
+import os
 import re
 import time
-from typing import Optional, List, Tuple
+from collections import Counter
+from typing import Optional
 
 import httpx
 
 from ..utils import _env_any, _trim_outliers_and_median
 
 _EBAY_TOKEN_CACHE = {"token": None, "expires_at": 0.0}
+logger = logging.getLogger(__name__)
 
 # ── Base bundle / defect keywords (always filtered) ──
 _BUNDLE_KEYWORDS_ALWAYS = {
@@ -56,35 +61,60 @@ def _build_bundle_keywords(item_type: str) -> set:
     return keywords
 
 
-def _title_is_relevant(item_title: str, game_title: str, platform_name: str, item_type: str = "game") -> bool:
-    """Return True if the eBay listing looks like a single copy of
-    the requested item, not a bundle / defect / unrelated listing."""
+def _title_exclusion_reason(item_title: str, game_title: str, item_type: str = "game") -> Optional[str]:
+    """Explain why a title is not a single, relevant listing for the requested item."""
     norm_item = _normalise(item_title)
     norm_game = _normalise(game_title)
 
-    bundle_keywords = _build_bundle_keywords(item_type)
+    for keyword in _build_bundle_keywords(item_type):
+        if keyword in norm_item:
+            return "keyword_bundle_or_defect"
 
-    # ── Reject listings that contain bundle / defect keywords ──
-    for kw in bundle_keywords:
-        if kw in norm_item:
-            return False
-
-    # ── Reject listings with "x Spiele" or "x games" patterns ──
     if re.search(r"\d+\s*(spiele|games|titles|stück|stk)", norm_item):
-        return False
+        return "keyword_multiple_items"
 
-    # ── Require that the listing title contains the core item words ──
-    # Extract the significant words from the game title (≥ 3 chars)
-    game_words = [w for w in norm_game.split() if len(w) >= 3]
-    if not game_words:
-        return True  # very short title, can't filter meaningfully
+    game_words = [word for word in norm_game.split() if len(word) >= 3]
+    if game_words:
+        matches = sum(1 for word in game_words if word in norm_item)
+        if matches < max(1, len(game_words) * 0.5):
+            return "title_not_relevant"
+    return None
 
-    # At least half of the game title's significant words should appear
-    matches = sum(1 for w in game_words if w in norm_item)
-    if matches < max(1, len(game_words) * 0.5):
-        return False
 
-    return True
+def _title_is_relevant(item_title: str, game_title: str, platform_name: str, item_type: str = "game") -> bool:
+    """Keep the existing boolean helper interface for callers and tests."""
+    return _title_exclusion_reason(item_title, game_title, item_type) is None
+
+
+def _condition_ids_for_item_type(item_type: str) -> set[str]:
+    """Return condition IDs relevant to this Collectabase item type."""
+    kind = (item_type or "game").strip().lower()
+    if kind in {"game", ""}:
+        # eBay's video-game categories use New, Like New, Very Good, Good,
+        # and Acceptable condition IDs; retain legacy IDs used by game listings.
+        return {"1000", "1500", "2750", "3000", "4000", "5000", "6000"}
+    if kind in _COLLECTIBLE_TYPES:
+        return {"1000", "1500", "2750", "3000"}
+    if kind in {"console", "controller", "accessory"}:
+        return {"1000", "1500", "2000", "2010", "2020", "2030", "2500", "2750", "3000"}
+    return {"2750", "3000"}
+
+
+def _amount_eur(amount) -> tuple[Optional[float], str]:
+    """Parse a Browse API ConvertedAmount without assuming its currency."""
+    if not isinstance(amount, dict) or amount.get("value") is None:
+        return None, "missing"
+    currency = str(amount.get("currency") or "").strip().upper()
+    if currency != "EUR":
+        return None, "currency_unknown" if not currency else "currency_unconverted"
+    try:
+        value = float(amount["value"])
+    except (TypeError, ValueError):
+        return None, "invalid"
+    if not math.isfinite(value):
+        return None, "invalid"
+    return value, "ok"
+
 
 
 async def get_ebay_token() -> Optional[str]:
@@ -108,7 +138,7 @@ async def get_ebay_token() -> Optional[str]:
         async with httpx.AsyncClient(timeout=12) as client:
             res = await client.post("https://api.ebay.com/identity/v1/oauth2/token", headers=headers, content=body)
         if res.status_code >= 400:
-            print(f"eBay token error ({res.status_code}): {res.text[:500]}")
+            logger.warning("eBay OAuth request failed with HTTP %s", res.status_code)
             return None
 
         data = res.json()
@@ -120,8 +150,8 @@ async def get_ebay_token() -> Optional[str]:
         _EBAY_TOKEN_CACHE["token"] = token
         _EBAY_TOKEN_CACHE["expires_at"] = now + max(expires_in - 60, 60)
         return token
-    except Exception as e:
-        print(f"eBay token fetch error: {e}")
+    except Exception as exc:
+        logger.warning("eBay OAuth request failed (%s)", type(exc).__name__)
         return None
 
 
@@ -130,68 +160,90 @@ async def fetch_ebay_market_price(title: str, platform_name: str, item_type: str
     if not token:
         return None
 
-    item_type_lower = (item_type or "game").lower()
-
-    # Don't append platform name for non-game collectibles (it pollutes the query)
+    item_type_lower = (item_type or "game").strip().lower()
     if item_type_lower in _NO_PLATFORM_TYPES:
         query = title.strip()
     else:
         query = " ".join(part for part in [title, platform_name] if part).strip()
 
-    # Collectibles are often sold new-in-box → include New condition (1000)
-    if item_type_lower in _COLLECTIBLE_TYPES:
-        condition_filter = "conditionIds:{1000|1500|2750|3000}"
-    else:
-        condition_filter = "conditionIds:{2750|3000}"
-
-    params = {"q": query, "filter": condition_filter, "limit": "50"}
-    headers = {"Authorization": f"Bearer {token}", "X-EBAY-C-MARKETPLACE-ID": "EBAY_DE"}
-
+    # Filter conditions locally so diagnostics can count each excluded result.
+    # Use Browse's documented maximum page size to reduce losses before local filtering.
+    params = {"q": query, "limit": "200"}
+    marketplace_id = os.getenv("EBAY_MARKETPLACE_ID", "EBAY_IT").strip().upper() or "EBAY_IT"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": marketplace_id,
+    }
     try:
         async with httpx.AsyncClient(timeout=12) as client:
-            res = await client.get("https://api.ebay.com/buy/browse/v1/item_summary/search", params=params, headers=headers)
+            res = await client.get(
+                "https://api.ebay.com/buy/browse/v1/item_summary/search",
+                params=params,
+                headers=headers,
+            )
 
         if res.status_code >= 400:
-            print(f"eBay browse error ({res.status_code}): {res.text[:500]}")
+            logger.warning("eBay Browse search failed with HTTP %s", res.status_code)
             return None
 
         payload = res.json()
         items = payload.get("itemSummaries", []) or []
+        if not isinstance(items, list):
+            items = []
 
-        prices: List[float] = []
-        skipped = 0
+        exclusions = Counter()
+        prices: list[float] = []
+        accepted_conditions = _condition_ids_for_item_type(item_type_lower)
+
         for item in items:
-            item_title = item.get("title", "")
-
-            # ── Skip irrelevant listings (bundles, defects, etc.) ──
-            if not _title_is_relevant(item_title, title, platform_name, item_type_lower):
-                skipped += 1
+            if not isinstance(item, dict):
+                exclusions["invalid_item"] += 1
                 continue
 
-            value = (item.get("price") or {}).get("value")
-            if value is None:
+            condition_id = str(item.get("conditionId") or "").strip()
+            if not condition_id:
+                exclusions["condition_missing"] += 1
                 continue
-            try:
-                price = float(value)
-            except (TypeError, ValueError):
+            if condition_id not in accepted_conditions:
+                exclusions["condition_excluded"] += 1
                 continue
-            if price > 0:
-                prices.append(price)
 
-        if skipped:
-            print(f"eBay: filtered out {skipped} irrelevant listings for '{query}'")
+            title_reason = _title_exclusion_reason(item.get("title", ""), title, item_type_lower)
+            if title_reason:
+                exclusions[title_reason] += 1
+                continue
+
+            item_price, price_reason = _amount_eur(item.get("price"))
+            if price_reason != "ok":
+                exclusions[f"price_{price_reason}"] += 1
+                continue
+            if item_price <= 0:
+                exclusions["price_invalid"] += 1
+                continue
+
+            prices.append(item_price)
 
         median_price, trimmed, min_price, max_price = _trim_outliers_and_median(prices)
+        used_count = len(trimmed)
+        logger.info(
+            "eBay price search diagnostics marketplace=%s api_returned=%d api_page_limit=%s eligible=%d used=%d trimmed_outliers=%d exclusions=%s",
+            marketplace_id,
+            len(items),
+            params["limit"],
+            len(prices),
+            used_count,
+            max(len(prices) - used_count, 0),
+            ",".join(f"{reason}:{count}" for reason, count in sorted(exclusions.items())) or "none",
+        )
         if median_price is None:
             return None
 
         return {
             "market_price": round(median_price, 2),
-            "sample_size": len(trimmed),
+            "sample_size": used_count,
             "price_min": round(min_price, 2),
             "price_max": round(max_price, 2),
         }
-    except Exception as e:
-        print(f"eBay browse error for '{query}': {e}")
+    except Exception as exc:
+        logger.warning("eBay Browse search failed (%s)", type(exc).__name__)
         return None
-

@@ -10,8 +10,8 @@ collection.
 ## Configure the eBay marketplace
 
 Set the `EBAY_MARKETPLACE_ID` environment variable to select the eBay
-marketplace used for GTIN barcode searches. If the variable is not set,
-Collectabase defaults to `EBAY_IT`.
+marketplace used for GTIN barcode searches and eBay price estimates. If the
+variable is not set, Collectabase defaults to `EBAY_IT`.
 
 Common examples:
 
@@ -25,16 +25,24 @@ Common examples:
 - `EBAY_ES` — Spain
 
 The marketplace setting is separate from the eBay API credentials. Configure
-the eBay Client ID and Client Secret in Collectabase Settings. Never publish
-API credentials, tokens, database files, backups, or personal deployment
-settings.
+the eBay Client ID and Client Secret in Collectabase Settings. Price estimates
+use the item's EUR price only; shipping is not included in this search-improvement
+release. Item prices without a valid EUR currency are excluded and foreign
+currencies are not converted.
+
+Each price lookup currently reads one Browse API search page, with up to 200
+results. The diagnostics log includes the returned count and page limit; matches
+beyond that page are not considered.
+
+Never publish API credentials, tokens, database files, backups, or personal
+deployment settings.
 
 ### Docker Compose example
 
-Add the following environment entry to the Collectabase service:
+The repository's `docker-compose.yml` passes this setting through by default.
+In Portainer, set `EBAY_MARKETPLACE_ID` in the Stack environment. For local
+Compose, put it in `.env` or run `docker compose --env-file stack.env up -d`;
+Compose does not automatically load a file named `stack.env`.
 
-    - EBAY_MARKETPLACE_ID=${EBAY_MARKETPLACE_ID:-EBAY_IT}
-
-For a different marketplace, set `EBAY_MARKETPLACE_ID` to the corresponding
-marketplace ID in the stack environment. Recreate the container after
-changing the variable so that it receives the new value.
+For another marketplace, set `EBAY_MARKETPLACE_ID` to its corresponding ID and
+recreate the container so it receives the new value.
