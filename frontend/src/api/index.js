@@ -44,7 +44,13 @@ export const statsApi = {
 }
 
 export const priceApi = {
-  check: (id, source = null) => apiPost(`/api/games/${id}/fetch-market-price${source ? `?source=${source}` : ''}`),
+  check: (id, source = null, options = {}) => {
+    const params = new URLSearchParams()
+    if (source) params.set('source', source)
+    if (options.deepSearch) params.set('deep_search', 'true')
+    const query = params.toString()
+    return apiPost(`/api/games/${id}/fetch-market-price${query ? `?${query}` : ''}`)
+  },
   history: (id) => apiGet(`/api/games/${id}/price-history`),
   manual: (id, payload) => apiPost(`/api/games/${id}/price-manual`, payload),
   deleteHistory: (id, entryId) => apiDelete(`/api/games/${id}/price-history/${entryId}`),

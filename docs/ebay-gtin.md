@@ -34,9 +34,11 @@ requested. Without a postcode, eBay may omit a calculated shipping amount; the
 estimate then falls back to the item price. Item prices without a valid EUR
 currency are excluded and foreign currencies are not converted.
 
-Each price lookup currently reads one Browse API search page, with up to 200
-results. The diagnostics log includes the returned count and page limit; matches
-beyond that page are not considered.
+A standard price lookup reads one Browse API search page, with up to 200
+results. Optional deep search can issue up to eight keyword queries plus one
+separate GTIN query, but reads only the first page of each. The diagnostics log
+counts returned and truncated searches; deep estimates are marked partial when
+the Browse API `next` link indicates an unfetched page.
 
 Never publish API credentials, tokens, database files, backups, or personal
 deployment settings.
@@ -50,3 +52,37 @@ Compose does not automatically load a file named `stack.env`.
 
 For another marketplace, set `EBAY_MARKETPLACE_ID` to its corresponding ID and
 recreate the container so it receives the new value.
+
+## Optional deep eBay price search
+
+The eBay button has a per-search **Deep eBay search** option. It is off by
+default, so the existing single title/platform request remains unchanged. When
+enabled, Collectabase can issue up to eight keyword queries using the title,
+saved alternate titles, region/platform-format hints, and selected product
+identifiers/attributes. A valid UPC/EAN or ISBN barcode (UPC-A, EAN-8/EAN-13, or ISBN-10/13) is sent as a separate
+`gtin` request because the Browse API does not allow `gtin` and keyword `q` in
+the same request. Results are merged and deduplicated by eBay item ID before
+filtering and price calculation. Deep searches stop issuing requests after an
+eBay rate-limit or authorization failure. They have a 35-second total budget and
+an 8-second per-request timeout. Collectabase reads one Browse response page per
+query (up to 200 listings); the API's documented `next` link is used to detect
+additional pages, which are not fetched in this opt-in path. If queries fail,
+are skipped due to the budget, or have more pages, the GUI labels the estimate
+as partial rather than implying that all queries completed. See the [Browse
+search pagination reference](https://developer.ebay.com/api-docs/buy/browse/resources/item_summary/methods/search.html)
+for the documented `next` field.
+
+
+For games, common saved regions are expanded into hints such as Japan/NTSC-J,
+USA/NTSC-U, and Europe/PAL. These are additional searches, not hard region
+filters; listings with no region in their title can still match the ordinary
+query. Saved product fields can include condition/completeness, publisher, developer,
+genre, series, character, scale, format, and release year; these are search hints,
+not hard condition filters. Notes, location, description,
+purchase price/date, and current value are deliberately not sent to eBay.
+
+Deep mode can take longer, still return few usable listings, and include false
+positives because sellers often omit or inconsistently describe edition and region. Check
+listing titles before relying on the estimate. The standard lookup remains the
+recommended default when broad coverage is more important than narrowing the
+edition.
