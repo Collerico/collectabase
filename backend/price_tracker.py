@@ -111,6 +111,7 @@ async def fetch_market_price(
             result = {
                 "market_price": ebay["market_price"],
                 "source": "ebay",
+                "source_detail": "direct_ebay",
                 "sample_size": ebay["sample_size"],
                 "price_min": ebay["price_min"],
                 "price_max": ebay["price_max"],
@@ -159,6 +160,7 @@ async def fetch_market_price(
             return {
                 "market_price": catalog["loose_eur"],
                 "source": "pricecharting",
+                "source_detail": "local_catalog",
                 "condition": "loose",
                 "matched_title": catalog["product_name"],
                 "matched_platform": catalog["platform"],
@@ -190,7 +192,12 @@ async def fetch_market_price(
                     (game_id, loose_eur, cib_eur, new_eur, eur_rate, pc["pricecharting_id"]),
                 )
                 db.commit()
-            return {"market_price": loose_eur, "source": "pricecharting", "condition": "loose"}
+            return {
+                "market_price": loose_eur,
+                "source": "pricecharting",
+                "source_detail": "live_scrape",
+                "condition": "loose",
+            }
 
     if ebay_enabled:
         ebay = await fetch_ebay_market_price(game["title"], game.get("platform_name") or "", item_type)
@@ -208,6 +215,7 @@ async def fetch_market_price(
             return {
                 "market_price": ebay["market_price"],
                 "source": "ebay",
+                "source_detail": "automatic_ebay_fallback",
                 "sample_size": ebay["sample_size"],
                 "price_min": ebay["price_min"],
                 "price_max": ebay["price_max"],
