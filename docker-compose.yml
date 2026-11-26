@@ -22,6 +22,7 @@ services:
       - DATABASE_URL=sqlite:////app/data/games.db
       - UPLOADS_DIR=/app/uploads
       - COLLECTABASE_BACKUP_DIR=/app/backups
+      - EBAY_MARKETPLACE_ID=${EBAY_MARKETPLACE_ID:-EBAY_IT}
       - TZ=Europe/Berlin
       # Optional: Uncomment and populate these if you want to set them system-wide instead of via the UI
       # - IGDB_CLIENT_ID=
