@@ -626,6 +626,79 @@ async def lookup_upcitemdb_barcode(barcode: str):
     except Exception as e:
         return {"results": [], "error": str(e)}
 
+async def lookup_ebay_barcode(barcode: str):
+    """Look up a UPC/EAN as a GTIN through the eBay Browse API."""
+    normalized = normalize_barcode(barcode)
+    if len(normalized) < 8:
+        return {"results": [], "error": "invalid_barcode"}
+
+    token = await get_ebay_token()
+    if not token:
+        return {"results": [], "error": "ebay_credentials_missing_or_token_failed"}
+
+    marketplace_id = os.getenv("EBAY_MARKETPLACE_ID", "EBAY_IT").strip().upper()
+    if not marketplace_id:
+        marketplace_id = "EBAY_IT"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": marketplace_id,
+    }
+    params = {
+        "gtin": normalized,
+        "limit": "10",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                "https://api.ebay.com/buy/browse/v1/item_summary/search",
+                params=params,
+                headers=headers,
+            )
+
+        if response.status_code >= 400:
+            return {
+                "results": [],
+                "error": f"ebay_status_{response.status_code}: {response.text[:300]}",
+            }
+
+        payload = response.json()
+        items = payload.get("itemSummaries", []) if isinstance(payload, dict) else []
+        results = []
+
+        for item in items:
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+
+            image_url = item.get("image", {}).get("imageUrl")
+            if not image_url and item.get("thumbnailImages"):
+                image_url = item["thumbnailImages"][0].get("imageUrl")
+
+            brand = item.get("brand")
+            if not brand:
+                for aspect in item.get("localizedAspects", []):
+                    aspect_name = str(aspect.get("name") or "").lower()
+                    if aspect_name in {"brand", "manufacturer"}:
+                        brand = aspect.get("value")
+                        break
+
+            results.append({
+                "source": "ebay",
+                "title": title,
+                "brand": brand,
+                "description": item.get("shortDescription") or "",
+                "cover_url": image_url,
+                "ebay_item_id": item.get("itemId"),
+            })
+
+        return {"results": results, "error": None}
+
+    except Exception as exc:
+        return {"results": [], "error": f"ebay_lookup_error: {exc}"}
+
+
 async def lookup_comicvine_title(title: str):
     api_key = _env_any("COMICVINE_API_KEY")
     if not api_key:
