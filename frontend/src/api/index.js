@@ -52,6 +52,7 @@ export const priceApi = {
     return apiPost(`/api/games/${id}/fetch-market-price${query ? `?${query}` : ''}`)
   },
   history: (id) => apiGet(`/api/games/${id}/price-history`),
+  saveEbayConditionPrices: (id, payload) => apiPost(`/api/games/${id}/price-history`, payload),
   manual: (id, payload) => apiPost(`/api/games/${id}/price-manual`, payload),
   deleteHistory: (id, entryId) => apiDelete(`/api/games/${id}/price-history/${entryId}`),
   applyCatalog: (id, catalogId) => apiPost(`/api/games/${id}/price-from-catalog`, { catalog_id: catalogId }),
