@@ -2,6 +2,7 @@
 <Container version="2">
   <Name>Collectabase</Name>
   <Repository>ghcr.io/collerico/collectabase:latest</Repository>
+  <Icon>https://raw.githubusercontent.com/Collerico/collectabase/main/frontend/public/icons/android-chrome-512x512.png</Icon>
   <Registry>ghcr.io</Registry>
   <Network>bridge</Network>
   <MyIP/>

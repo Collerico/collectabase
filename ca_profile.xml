@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <CommunityApplications>
   <Profile>Community Applications template for Collectabase, a self-hosted collection manager maintained by Collerico. For installation help and bug reports, use the project GitHub repository.</Profile>
-  <Icon>https://raw.githubusercontent.com/Collerico/collectabase/main/icon.svg</Icon>
+  <Icon>https://raw.githubusercontent.com/Collerico/collectabase/main/frontend/public/icons/android-chrome-512x512.png</Icon>
   <WebPage>https://github.com/Collerico/collectabase</WebPage>
 </CommunityApplications>
