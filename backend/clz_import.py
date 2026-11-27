@@ -1,8 +1,11 @@
 import csv
 import io
+import logging
 from datetime import datetime
 from fastapi import APIRouter, UploadFile, File
 from .database import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -94,8 +97,9 @@ async def import_clz(file: UploadFile = File(...)):
                         pid = found["id"] if found else None
                     if pid:
                         platform_map[platform_name.lower()] = pid
-                except Exception as e:
-                    errors.append(f"Line {i}: Could not create platform '{platform_name}': {e}")
+                except Exception:
+                    logger.exception("Could not create CLZ platform at line %s", i)
+                    errors.append(f"Line {i}: Could not create platform '{platform_name}'")
 
             try:
                 db.execute("""
@@ -126,8 +130,9 @@ async def import_clz(file: UploadFile = File(...)):
                     1 if str(row.get("is_wishlist", "0")).lower() in ["1", "true", "yes", "wishlist"] else 0,
                 ))
                 imported += 1
-            except Exception as e:
-                errors.append(f"Line {i}: {title} → {e}")
+            except Exception:
+                logger.exception("Could not import CLZ item at line %s", i)
+                errors.append(f"Line {i}: {title} → Could not import item")
                 skipped += 1
 
         db.commit()

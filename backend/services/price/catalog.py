@@ -19,6 +19,7 @@ from .utils import (
     _to_eur,
 )
 from .platforms import canonicalize_platform
+from .pricecharting_urls import normalize_pricecharting_product_url
 
 logger = logging.getLogger("collectabase.catalog")
 
@@ -148,12 +149,9 @@ async def scrape_platform_catalog(platform_slug: str, platform_label: str) -> li
                 title_cell = row.select_one("td.title a")
                 if not title_cell: continue
                 title = title_cell.get_text(strip=True)
-                href = title_cell.get("href", "")
-                if "pricecharting.com" in href:
-                    href = href.split("pricecharting.com")[1]
-                if not href.startswith("/"):
-                    href = "/" + href
-                pc_id_match = re.search(r"/game/[^/]+/(.+)(?:\?|$)", href)
+                href = normalize_pricecharting_product_url(title_cell.get("href", ""))
+                if href is None: continue
+                pc_id_match = re.search(r"/game/[^/]+/([^?]+)", href)
                 pc_id = pc_id_match.group(1) if pc_id_match else ""
                 page_url = f"https://www.pricecharting.com{href}" if href else ""
 

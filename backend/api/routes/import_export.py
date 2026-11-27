@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 import os
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from ...database import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -74,7 +77,8 @@ async def import_csv(file: UploadFile = File(...)):
             try:
                 platform_name = row.get("Platform", row.get("platform", "")).strip()
                 if not platform_name:
-                    raise ValueError("Missing platform name")
+                    errors.append(f"Row {row_num}: Missing platform name")
+                    continue
                 platform_row = db.execute(
                     "SELECT id FROM platforms WHERE name = ?",
                     (platform_name,),
@@ -113,7 +117,8 @@ async def import_csv(file: UploadFile = File(...)):
 
                 title_val = row.get("Title", row.get("title", "")).strip()
                 if not title_val:
-                    raise ValueError("Missing title")
+                    errors.append(f"Row {row_num}: Missing title")
+                    continue
                 item_type = row.get("Type", row.get("item_type", "")).lower().strip()
                 if not item_type:
                     title_lower = title_val.lower()
@@ -169,8 +174,9 @@ async def import_csv(file: UploadFile = File(...)):
                     ),
                 )
                 imported += 1
-            except Exception as e:
-                errors.append(f"Row {row_num}: {str(e)}")
+            except Exception:
+                logger.exception("Could not import CSV item at row %s", row_num)
+                errors.append(f"Row {row_num}: Could not import item")
         db.commit()
     return {"imported": imported, "skipped_duplicates": skipped_duplicates, "errors": errors or None}
 
