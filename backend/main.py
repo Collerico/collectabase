@@ -1,12 +1,14 @@
+import errno
 import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .version import APP_VERSION
 
@@ -53,6 +55,7 @@ app.include_router(price_router)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend", "dist")
 FRONTEND_DIR_RESOLVED = Path(FRONTEND_DIR).resolve()
+frontend_files = StaticFiles(directory=FRONTEND_DIR_RESOLVED, check_dir=False)
 CONSOLE_FALLBACKS_DIR = os.path.join(BASE_DIR, "backend", "static", "console-fallbacks")
 
 assets_dir = os.path.join(FRONTEND_DIR, "assets")
@@ -92,18 +95,21 @@ async def root():
 
 
 @app.get("/{path:path}")
-async def catch_all(path: str):
+async def catch_all(path: str, request: Request):
     if path.startswith("api/"):
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "API endpoint not found"})
 
-    requested = (FRONTEND_DIR_RESOLVED / path).resolve()
-    try:
-        requested.relative_to(FRONTEND_DIR_RESOLVED)
-    except ValueError:
-        return FileResponse(str(FRONTEND_DIR_RESOLVED / "index.html"))
-
-    if requested.exists() and requested.is_file():
-        return FileResponse(str(requested))
+    # Let StaticFiles enforce its canonical-path and symlink containment checks.
+    # Only the constant SPA entry point is ever passed directly to FileResponse.
+    if "\x00" not in path:
+        try:
+            return await frontend_files.get_response(path, request.scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+        except OSError as exc:
+            if exc.errno != errno.ENAMETOOLONG:
+                raise
     return FileResponse(str(FRONTEND_DIR_RESOLVED / "index.html"))
 
 

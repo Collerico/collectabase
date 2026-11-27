@@ -4,6 +4,7 @@ from typing import Optional
 import httpx
 from bs4 import BeautifulSoup
 
+from ..pricecharting_urls import normalize_pricecharting_product_url
 from ..utils import (
     HEADERS,
     _catalog_match_score,
@@ -90,10 +91,9 @@ async def _fetch_pricecharting_scrape(title: str, platform_name: str):
                 best_link = None
                 best_score = -1.0
 
-                for a in soup.select("a[href*='/game/']"):
-                    href = a.get("href", "")
-                    if "pricecharting.com" in href:
-                        href = href.split("pricecharting.com")[1]
+                for a in soup.select("a[href]"):
+                    href = normalize_pricecharting_product_url(a.get("href", ""))
+                    if href is None: continue
                     parts = href.strip("/").split("/")
                     if len(parts) < 3 or parts[0] != "game": continue
 
