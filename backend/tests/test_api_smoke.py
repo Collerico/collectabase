@@ -683,5 +683,102 @@ class ApiSmokeTest(unittest.TestCase):
         self.assertEqual(response.json()["auto_backup_count"], 1)
 
 
+    def test_update_all_ebay_tiers_saves_one_snapshot_without_changing_current_value(self):
+        platform = self._platform_by_name("PlayStation")
+        created = self.client.post("/api/games", json={
+            "title": "eBay tier snapshot smoke test",
+            "platform_id": platform["id"],
+            "item_type": "game",
+            "current_value": 123.45,
+        })
+        self.assertEqual(created.status_code, 200)
+        game_id = created.json()["id"]
+
+        saved = self.client.post(f"/api/games/{game_id}/price-history", json={
+            "loose_price": 20.0,
+            "complete_price": 60.0,
+            "new_price": 100.0,
+        })
+
+        self.assertEqual(saved.status_code, 200)
+        self.assertTrue(saved.json()["ok"])
+        history = self.client.get(f"/api/games/{game_id}/price-history").json()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["source"], "ebay_conditions")
+        self.assertEqual(history[0]["loose_price"], 20.0)
+        self.assertEqual(history[0]["complete_price"], 60.0)
+        self.assertEqual(history[0]["new_price"], 100.0)
+        refreshed_game = self.client.get(f"/api/games/{game_id}").json()
+        self.assertEqual(refreshed_game["current_value"], 123.45)
+
+        empty = self.client.post(f"/api/games/{game_id}/price-history", json={})
+        self.assertEqual(empty.status_code, 400)
+        negative = self.client.post(f"/api/games/{game_id}/price-history", json={"new_price": -1})
+        self.assertEqual(negative.status_code, 400)
+        zero = self.client.post(f"/api/games/{game_id}/price-history", json={"new_price": 0})
+        self.assertEqual(zero.status_code, 400)
+        oversized = self.client.post(f"/api/games/{game_id}/price-history", json={"new_price": 10 ** 400})
+        self.assertEqual(oversized.status_code, 400)
+        beyond_sqlite_int = self.client.post(f"/api/games/{game_id}/price-history", json={"new_price": 2 ** 63})
+        self.assertEqual(beyond_sqlite_int.status_code, 400)
+        boolean_true = self.client.post(f"/api/games/{game_id}/price-history", json={"new_price": True})
+        self.assertEqual(boolean_true.status_code, 422)
+        boolean_false = self.client.post(f"/api/games/{game_id}/price-history", json={"new_price": False})
+        self.assertEqual(boolean_false.status_code, 422)
+        non_numeric = self.client.post(f"/api/games/{game_id}/price-history", json={"new_price": "not-a-price"})
+        self.assertEqual(non_numeric.status_code, 422)
+        non_finite = self.client.post(
+            f"/api/games/{game_id}/price-history",
+            content='{"new_price": NaN}',
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(non_finite.status_code, 400)
+        missing_game = self.client.post("/api/games/999999/price-history", json={"new_price": 10})
+        self.assertEqual(missing_game.status_code, 404)
+        self.assertEqual(len(self.client.get(f"/api/games/{game_id}/price-history").json()), 1)
+
+        partial_game = self.client.post("/api/games", json={
+            "title": "eBay partial tier snapshot smoke test",
+            "platform_id": platform["id"],
+            "item_type": "game",
+            "current_value": 55.0,
+        })
+        partial_game_id = partial_game.json()["id"]
+        partial_saved = self.client.post(
+            f"/api/games/{partial_game_id}/price-history",
+            json={"complete_price": 72.5},
+        )
+        self.assertEqual(partial_saved.status_code, 200)
+        partial_history = self.client.get(f"/api/games/{partial_game_id}/price-history").json()
+        self.assertEqual(len(partial_history), 1)
+        self.assertIsNone(partial_history[0]["loose_price"])
+        self.assertEqual(partial_history[0]["complete_price"], 72.5)
+        self.assertIsNone(partial_history[0]["new_price"])
+        self.assertEqual(self.client.get(f"/api/games/{partial_game_id}").json()["current_value"], 55.0)
+
+
+    def test_ebay_condition_snapshot_requires_admin_key_when_configured(self):
+        platform = self._platform_by_name("PlayStation")
+        created = self.client.post("/api/games", json={
+            "title": "eBay tier authorization smoke test",
+            "platform_id": platform["id"],
+            "item_type": "game",
+        })
+        game_id = created.json()["id"]
+        payload = {"complete_price": 25.0}
+
+        with patch.dict(os.environ, {"ADMIN_API_KEY": "test-admin-key"}):
+            unauthorized = self.client.post(f"/api/games/{game_id}/price-history", json=payload)
+            authorized = self.client.post(
+                f"/api/games/{game_id}/price-history",
+                json=payload,
+                headers={"X-Admin-Key": "test-admin-key"},
+            )
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(authorized.status_code, 200)
+        self.assertEqual(self.client.delete(f"/api/games/{game_id}").status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

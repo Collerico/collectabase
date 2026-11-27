@@ -1,10 +1,11 @@
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictFloat, StrictInt
 
 from .api.routes.games import _parse_alt_titles
 from .api.security import require_admin_access
@@ -106,63 +107,70 @@ async def fetch_market_price(
                 "truncated_searches": ebay.get("truncated_searches", 0),
             }
         if ebay:
+            raw_market_price = ebay.get("market_price")
+            if isinstance(raw_market_price, bool):
+                market_price = None
+            else:
+                try:
+                    market_price = float(raw_market_price)
+                except (TypeError, ValueError, OverflowError):
+                    market_price = None
+            if market_price is None or not math.isfinite(market_price) or market_price <= 0:
+                return {"error": "No usable eBay listings found for this game."}
+
             price_options = ebay.get("price_options") or [{
                 "condition": "market",
                 "label": "Market median (mixed conditions)",
-                "market_price": ebay["market_price"],
+                "market_price": market_price,
                 "sample_size": ebay["sample_size"],
                 "price_min": ebay["price_min"],
                 "price_max": ebay["price_max"],
             }]
-            history_sources = {
-                "market": ("ebay_market", "loose_price"),
-                "loose": ("ebay_loose", "loose_price"),
-                "complete": ("ebay_cib", "complete_price"),
-                "new": ("ebay_new", "new_price"),
-            }
-            suggestions = []
+            suggestions = [
+                {
+                    **option,
+                    "source": "ebay",
+                    "source_detail": "direct_ebay",
+                }
+                for option in price_options
+            ]
+            # Track the all-listings median immediately, but save condition-specific
+            # values together only when the user selects Update All.
             with get_db() as db:
-                for option in price_options:
-                    condition = option.get("condition")
-                    history_source = history_sources.get(condition)
-                    price = option.get("market_price")
-                    if history_source and price is not None:
-                        source_name, price_column = history_source
-                        loose_price = price if price_column == "loose_price" else None
-                        complete_price = price if price_column == "complete_price" else None
-                        new_price = price if price_column == "new_price" else None
-                        db.execute(
-                            """
-                            INSERT INTO price_history
-                                (game_id, source, loose_price, complete_price, new_price, eur_rate)
-                            VALUES (?, ?, ?, ?, ?, 1.0)
-                            """,
-                            (game_id, source_name, loose_price, complete_price, new_price),
-                        )
-                    suggestions.append({
-                        **option,
-                        "source": "ebay",
-                        "source_detail": "direct_ebay",
-                    })
+                db.execute(
+                    """
+                    INSERT INTO price_history
+                        (game_id, source, loose_price, complete_price, new_price, eur_rate)
+                    VALUES (?, 'ebay_market', ?, NULL, NULL, 1.0)
+                    """,
+                    (game_id, market_price),
+                )
                 db.commit()
+            suggestion_group = {
+                "source": "ebay",
+                "source_detail": "direct_ebay",
+                "price_options": suggestions,
+            }
             result = {
-                "market_price": ebay["market_price"],
+                "market_price": market_price,
                 "source": "ebay",
                 "source_detail": "direct_ebay",
                 "sample_size": ebay["sample_size"],
                 "price_min": ebay["price_min"],
                 "price_max": ebay["price_max"],
-                "suggestions": [{
-                    "source": "ebay",
-                    "source_detail": "direct_ebay",
-                    "price_options": suggestions,
-                }],
+                "suggestions": [suggestion_group],
             }
             if "search_complete" in ebay:
-                result["search_complete"] = ebay["search_complete"]
-                result["failed_searches"] = ebay.get("failed_searches", 0)
-                result["skipped_searches"] = ebay.get("skipped_searches", 0)
-                result["truncated_searches"] = ebay.get("truncated_searches", 0)
+                partial_status = {
+                    "search_complete": ebay["search_complete"],
+                    "failed_searches": ebay.get("failed_searches", 0),
+                    "skipped_searches": ebay.get("skipped_searches", 0),
+                    "truncated_searches": ebay.get("truncated_searches", 0),
+                }
+                result.update(partial_status)
+                suggestion_group.update(partial_status)
+                for option in suggestions:
+                    option.update(partial_status)
             return result
         return {"error": "No eBay listings found for this game."}
 
@@ -312,6 +320,59 @@ async def get_price_history(game_id: int):
             (game_id,),
         ).fetchall()
         return [dict_from_row(r) for r in rows]
+
+
+EbayConditionPrice = Union[StrictFloat, StrictInt]
+
+
+_MAX_EBAY_CONDITION_PRICE_EUR = (1 << 63) - 1
+
+
+class EbayConditionPriceSnapshot(BaseModel):
+    loose_price: Optional[EbayConditionPrice] = None
+    complete_price: Optional[EbayConditionPrice] = None
+    new_price: Optional[EbayConditionPrice] = None
+
+
+@router.post("/api/games/{game_id}/price-history")
+async def save_ebay_condition_price_snapshot(
+    game_id: int,
+    entry: EbayConditionPriceSnapshot,
+    _admin: None = Depends(require_admin_access),
+):
+    """Save all selected eBay condition tiers as one history observation."""
+    prices = (entry.loose_price, entry.complete_price, entry.new_price)
+    if all(price is None for price in prices):
+        raise HTTPException(status_code=400, detail="At least one condition price is required")
+    try:
+        invalid_price = any(
+            price is not None
+            and (not math.isfinite(price) or price <= 0 or price > _MAX_EBAY_CONDITION_PRICE_EUR)
+            for price in prices
+        )
+    except OverflowError:
+        invalid_price = True
+    if invalid_price:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Condition prices must be finite positive EUR values no greater than {_MAX_EBAY_CONDITION_PRICE_EUR}",
+        )
+
+    with get_db() as db:
+        game = db.execute("SELECT id FROM games WHERE id = ?", (game_id,)).fetchone()
+        if not game:
+            raise HTTPException(status_code=404, detail="Game not found")
+        cursor = db.execute(
+            """
+            INSERT INTO price_history
+                (game_id, source, loose_price, complete_price, new_price, eur_rate)
+            VALUES (?, 'ebay_conditions', ?, ?, ?, 1.0)
+            """,
+            (game_id, entry.loose_price, entry.complete_price, entry.new_price),
+        )
+        db.commit()
+
+    return {"ok": True, "id": cursor.lastrowid, "source": "ebay_conditions"}
 
 
 @router.delete("/api/games/{game_id}/price-history/{entry_id}")

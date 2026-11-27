@@ -278,7 +278,7 @@
 
           <div v-if="latestPrice" class="price-cells">
             <div class="price-cell" :class="{ relevant: relevantKey() === 'loose' }">
-              <span class="p-label">Loose</span>
+              <span class="p-label">{{ isMarketHistoryEntry(latestPrice) ? 'Market' : 'Loose' }}</span>
               <span class="p-val">{{ latestPrice.loose_price != null ? '€' + latestPrice.loose_price.toFixed(2) : '—' }}</span>
             </div>
             <div class="price-cell" :class="{ relevant: relevantKey() === 'complete' }">
@@ -317,8 +317,26 @@
           </div>
 
           <div v-if="marketSuggestions.length" class="market-suggestions mt-2">
+            <div v-if="ebayMarketSuggestion" class="market-median-summary mb-2">
+              <div>
+                <strong>eBay median price</strong>
+                <span class="market-median-value">€{{ formatMoney(ebayMarketSuggestion.market_price) }}</span>
+                <span v-if="ebayMarketSuggestion.sample_size != null" class="text-muted">
+                  · {{ ebayMarketSuggestion.sample_size }} listings used
+                </span>
+                <span v-if="ebayMarketSuggestion.price_min != null && ebayMarketSuggestion.price_max != null" class="text-muted">
+                  · range €{{ formatMoney(ebayMarketSuggestion.price_min) }}–€{{ formatMoney(ebayMarketSuggestion.price_max) }}
+                </span>
+              </div>
+              <button class="btn btn-secondary btn-sm" @click="setMarketSuggestionAsCurrentValue(ebayMarketSuggestion)" :disabled="settingSuggestedValue">
+                Set median as current value
+              </button>
+              <div v-if="ebayMarketSuggestion.search_complete === false" class="deep-search-warning mt-2" role="alert">
+                Partial estimate: {{ ebayMarketSuggestion.failed_searches }} request(s) failed, {{ ebayMarketSuggestion.skipped_searches }} were skipped, and {{ ebayMarketSuggestion.truncated_searches }} query(ies) had more pages not fetched. Only returned listings were used.
+              </div>
+            </div>
             <div
-              v-for="suggestion in marketSuggestions"
+              v-for="suggestion in visibleMarketSuggestions"
               :key="`${suggestion.source}-${suggestion.source_detail || 'unknown'}-${suggestion.condition || 'market'}`"
               class="market-suggestion mt-2"
             >
@@ -350,6 +368,12 @@
                 </button>
                 <button class="btn btn-secondary btn-sm" @click="dismissMarketSuggestion(suggestion)">Dismiss</button>
               </div>
+            </div>
+            <div v-if="canUpdateAllEbayConditionPrices" class="update-all-prices mt-3">
+              <button class="btn btn-primary btn-sm" @click="updateAllEbayConditionPrices" :disabled="savingAllConditionPrices">
+                {{ savingAllConditionPrices ? 'Saving...' : 'Update all condition prices' }}
+              </button>
+              <span class="text-muted text-sm">Saves the available Loose/CIB/New values to price history; your item's current value stays unchanged.</span>
             </div>
           </div>
 
@@ -503,6 +527,7 @@ const priceInfo = ref('')
 const priceInfoAction = ref('')
 const rawgReference = ref(null)
 const settingSuggestedValue = ref(false)
+const savingAllConditionPrices = ref(false)
 const priceChartEl = ref(null)
 const coverFileInput = ref(null)
 const galleryFileInput = ref(null)
@@ -538,6 +563,16 @@ let chartInstance = null
 
 const latestPrice = computed(() => priceHistory.value[0] ?? null)
 const recentPriceEntries = computed(() => priceHistory.value.slice(0, 10))
+const ebayMarketSuggestion = computed(() => marketSuggestions.value.find(
+  suggestion => suggestion.source === 'ebay' && suggestion.condition === 'market'
+) || null)
+const ebayConditionSuggestions = computed(() => marketSuggestions.value.filter(
+  suggestion => suggestion.source === 'ebay' && ['loose', 'complete', 'new'].includes(suggestion.condition)
+))
+const visibleMarketSuggestions = computed(() => marketSuggestions.value.filter(
+  suggestion => !(suggestion.source === 'ebay' && suggestion.condition === 'market')
+))
+const canUpdateAllEbayConditionPrices = computed(() => ebayConditionSuggestions.value.length >= 1)
 const currentCoverSrc = computed(() => {
   if (!game.value) return null
   if (game.value.cover_url && !coverHasError.value) return game.value.cover_url
@@ -615,9 +650,18 @@ function buildChart() {
   const labels = ordered.map(r => formatChartDate(r.fetched_at))
   const datasets = [
     {
-      label: 'Loose / Market',
-      data: ordered.map(r => r.loose_price),
+      label: 'Loose',
+      data: ordered.map(r => isMarketHistoryEntry(r) ? null : r.loose_price),
       borderColor: '#60a5fa',
+      backgroundColor: 'transparent',
+      tension: 0.3,
+      pointRadius: 4,
+      spanGaps: true
+    },
+    {
+      label: 'Market median',
+      data: ordered.map(r => isMarketHistoryEntry(r) ? r.loose_price : null),
+      borderColor: '#a78bfa',
       backgroundColor: 'transparent',
       tension: 0.3,
       pointRadius: 4,
@@ -761,6 +805,7 @@ function priceSourceLabel(source) {
     ebay_loose: 'eBay · explicit Loose listings',
     ebay_cib: 'eBay · CIB listings',
     ebay_new: 'eBay · New condition listings',
+    ebay_conditions: 'eBay · condition tiers',
     manual: 'Manual',
     'Start Value': 'Start Value'
   }
@@ -795,12 +840,16 @@ function formatMatchScore(value) {
 }
 
 
+function isMarketHistoryEntry(entry) {
+  return ['ebay', 'ebay_market'].includes(String(entry?.source || ''))
+}
+
 function entryDisplayValue(entry) {
   if (!entry) return '—'
   const source = String(entry.source || '')
   const values = []
   if (entry.loose_price != null) {
-    const label = source === 'ebay' || source === 'ebay_market' ? 'Market' : 'Loose'
+    const label = isMarketHistoryEntry(entry) ? 'Market' : 'Loose'
     values.push(`${label} €${formatMoney(entry.loose_price)}`)
   }
   if (entry.complete_price != null) values.push(`CIB €${formatMoney(entry.complete_price)}`)
@@ -921,6 +970,42 @@ async function setMarketSuggestionAsCurrentValue(suggestion) {
     notifyError('Failed to set current value.')
   } finally {
     settingSuggestedValue.value = false
+  }
+}
+
+async function updateAllEbayConditionPrices() {
+  if (!canUpdateAllEbayConditionPrices.value) return
+  const payload = { loose_price: null, complete_price: null, new_price: null }
+  const fieldByCondition = {
+    loose: 'loose_price',
+    complete: 'complete_price',
+    new: 'new_price'
+  }
+  for (const suggestion of ebayConditionSuggestions.value) {
+    const field = fieldByCondition[suggestion.condition]
+    const rawValue = suggestion.market_price
+    if (rawValue == null || (typeof rawValue === 'string' && !rawValue.trim())) continue
+    if (typeof rawValue !== 'number' && typeof rawValue !== 'string') continue
+    const value = Number(rawValue)
+    if (field && Number.isFinite(value) && value > 0) payload[field] = value
+  }
+  if (Object.values(payload).every(value => value == null)) return
+
+  savingAllConditionPrices.value = true
+  try {
+    const res = await priceApi.saveEbayConditionPrices(route.params.id, payload)
+    if (!res.ok) {
+      const detail = res.data?.detail
+      notifyError(detail?.message || detail || 'Failed to save eBay condition prices.')
+      return
+    }
+    await loadPriceHistory()
+    notifySuccess('All available eBay condition prices saved. The item current value was not changed.')
+  } catch (e) {
+    console.error('Failed saving eBay condition prices:', e)
+    notifyError('Failed to save eBay condition prices.')
+  } finally {
+    savingAllConditionPrices.value = false
   }
 }
 
@@ -2041,6 +2126,31 @@ onMounted(async () => {
   font-size: 0.88rem;
 }
 
+.market-median-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgba(251, 146, 60, 0.45);
+  border-radius: 0.5rem;
+  background: rgba(251, 146, 60, 0.08);
+}
+
+.market-median-value {
+  margin-left: 0.45rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.update-all-prices {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .market-match {
   margin-top: 0.3rem;
   font-size: 0.78rem;
@@ -2262,6 +2372,20 @@ onMounted(async () => {
 
   .market-suggestion-actions .btn {
     width: 100%;
+  }
+
+  .market-median-summary {
+    align-items: stretch;
+  }
+
+  .market-median-summary .btn,
+  .update-all-prices .btn {
+    width: 100%;
+  }
+
+  .update-all-prices {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .manual-entry-fields {

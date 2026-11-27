@@ -139,14 +139,16 @@ class MarketPriceSourceTests(unittest.TestCase):
         scrape.assert_not_awaited()
         ebay.assert_awaited_once()
 
-    def test_direct_ebay_returns_and_saves_each_condition_tier(self):
+    def test_ebay_lookup_saves_market_median_and_defers_condition_tiers_to_update_all(self):
         ebay_result = {
             "market_price": 50.0,
             "sample_size": 5,
             "price_min": 20.0,
             "price_max": 100.0,
-            "complete_price": 60.0,
-            "new_price": 100.0,
+            "search_complete": False,
+            "failed_searches": 1,
+            "skipped_searches": 2,
+            "truncated_searches": 3,
             "price_options": [
                 {"condition": "market", "label": "Market median (mixed conditions)", "market_price": 50.0, "sample_size": 5},
                 {"condition": "loose", "label": "Loose (explicit listing text)", "market_price": 20.0, "sample_size": 1},
@@ -159,28 +161,70 @@ class MarketPriceSourceTests(unittest.TestCase):
             source="ebay", ebay=ebay_result
         )
 
+        self.assertEqual(result["market_price"], 50.0)
         self.assertEqual(
             [option["condition"] for option in result["suggestions"][0]["price_options"]],
             ["market", "loose", "complete", "new"],
         )
+        self.assertFalse(result["search_complete"])
+        for status_field in ("search_complete", "failed_searches", "skipped_searches", "truncated_searches"):
+            self.assertEqual(result["suggestions"][0][status_field], ebay_result[status_field])
+            self.assertEqual(result["suggestions"][0]["price_options"][0][status_field], ebay_result[status_field])
         history_writes = [
             call for call in fake_db.execute.call_args_list
             if "INSERT INTO price_history" in call.args[0]
         ]
-        self.assertEqual(len(history_writes), 4)
-        self.assertEqual(
-            [call.args[1][1] for call in history_writes],
-            ["ebay_market", "ebay_loose", "ebay_cib", "ebay_new"],
+        self.assertEqual(len(history_writes), 1)
+        self.assertIn("'ebay_market'", history_writes[0].args[0])
+        self.assertEqual(history_writes[0].args[1], (17, 50.0))
+
+
+    def test_invalid_ebay_median_does_not_write_empty_market_history(self):
+        result, _catalog_lookup, _scrape, _ebay, fake_db = self._run_lookup(
+            source="ebay",
+            ebay={
+                "market_price": None,
+                "sample_size": 0,
+                "price_min": None,
+                "price_max": None,
+                "price_options": [],
+            },
         )
-        self.assertEqual(
-            [call.args[1][2:] for call in history_writes],
-            [
-                (50.0, None, None),
-                (20.0, None, None),
-                (None, 60.0, None),
-                (None, None, 100.0),
-            ],
+
+        self.assertEqual(result["error"], "No usable eBay listings found for this game.")
+        self.assertFalse(any("INSERT INTO price_history" in call.args[0] for call in fake_db.execute.call_args_list))
+
+
+    def test_oversized_ebay_median_is_rejected_without_history_write(self):
+        result, _catalog_lookup, _scrape, _ebay, fake_db = self._run_lookup(
+            source="ebay",
+            ebay={
+                "market_price": 10 ** 400,
+                "sample_size": 1,
+                "price_min": 1.0,
+                "price_max": 1.0,
+                "price_options": [],
+            },
         )
+
+        self.assertEqual(result["error"], "No usable eBay listings found for this game.")
+        self.assertFalse(any("INSERT INTO price_history" in call.args[0] for call in fake_db.execute.call_args_list))
+
+    def test_boolean_ebay_median_is_rejected_without_history_write(self):
+        result, _catalog_lookup, _scrape, _ebay, fake_db = self._run_lookup(
+            source="ebay",
+            ebay={
+                "market_price": True,
+                "sample_size": 1,
+                "price_min": 1.0,
+                "price_max": 1.0,
+                "price_options": [],
+            },
+        )
+
+        self.assertEqual(result["error"], "No usable eBay listings found for this game.")
+        self.assertFalse(any("INSERT INTO price_history" in call.args[0] for call in fake_db.execute.call_args_list))
+
 
 
 if __name__ == "__main__":
