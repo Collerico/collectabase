@@ -2,6 +2,8 @@
 
 A self-hosted, sleek, and fully automated **collection manager** for games, consoles, Funko Pops, anime figures, comics, and more. Your free, robust alternative to CLZ Games — with smarter pricing, beautiful UI, and complete control over your data.
 
+This fork adds security fixes and dependency updates, hardens file serving, imports, and PriceCharting URL validation, and expands eBay price tracking with configurable searches and condition-aware estimates. It also includes an Unraid Community Applications template and a GitHub Actions workflow for publishing the container image to GHCR.
+
 <!-- Save your screenshots as: docs/screenshot-collection.png, docs/screenshot-detail.png, docs/screenshot-stats.png, docs/screenshot-prices.png -->
 
 | Collection Overview | Item Detail |
