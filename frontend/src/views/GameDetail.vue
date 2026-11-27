@@ -319,12 +319,11 @@
           <div v-if="marketSuggestions.length" class="market-suggestions mt-2">
             <div
               v-for="suggestion in marketSuggestions"
-              :key="`${suggestion.source}-${suggestion.source_detail || 'unknown'}`"
+              :key="`${suggestion.source}-${suggestion.source_detail || 'unknown'}-${suggestion.condition || 'market'}`"
               class="market-suggestion mt-2"
             >
               <div v-if="suggestion.source === 'pricecharting'" class="market-suggestion-text">
-                📊 €{{ formatMoney(suggestion.market_price) }}
-                (PriceCharting{{ suggestion.source_detail === 'local_catalog' ? ' · local catalog' : suggestion.source_detail === 'live_scrape' ? ' · live scrape' : '' }} - Loose)
+                📊 {{ marketSuggestionSourceLabel(suggestion) }}
                 <div v-if="suggestion.matched_title" class="market-match">
                   Match: {{ suggestion.matched_title }}
                   <span v-if="suggestion.matched_platform"> ({{ suggestion.matched_platform }})</span>
@@ -332,12 +331,17 @@
                 </div>
               </div>
               <div v-else-if="suggestion.source === 'ebay'" class="market-suggestion-text">
-                🛒 ~€{{ formatMoney(suggestion.market_price) }}
-                <span v-if="suggestion.source_detail === 'automatic_ebay_fallback'">(Automatic lookup used eBay fallback · median of {{ suggestion.sample_size }} listings, €{{ formatMoney(suggestion.price_min) }}-€{{ formatMoney(suggestion.price_max) }})</span>
-                <span v-else-if="suggestion.source_detail === 'direct_ebay'">(Direct eBay search · median of {{ suggestion.sample_size }} listings, €{{ formatMoney(suggestion.price_min) }}-€{{ formatMoney(suggestion.price_max) }})</span>
-                <span v-else>(eBay listings · median of {{ suggestion.sample_size }} listings, €{{ formatMoney(suggestion.price_min) }}-€{{ formatMoney(suggestion.price_max) }})</span>
+                🛒 {{ marketSuggestionSourceLabel(suggestion) }}
               </div>
-              <div v-if="suggestion.search_complete === false" class="deep-search-warning" role="alert">
+              <div class="market-suggestion-price mt-1">
+                <strong>{{ suggestion.label || (suggestion.source === 'ebay' ? 'Market median (mixed conditions)' : 'Loose') }}</strong>
+                <span>€{{ formatMoney(suggestion.market_price) }}</span>
+                <span v-if="suggestion.sample_size != null" class="text-muted">· {{ suggestion.sample_size }} listing(s)</span>
+                <span v-if="suggestion.price_min != null && suggestion.price_max != null" class="text-muted">
+                  · range €{{ formatMoney(suggestion.price_min) }}–€{{ formatMoney(suggestion.price_max) }}
+                </span>
+              </div>
+              <div v-if="suggestion.search_complete === false && suggestion.condition === 'market'" class="deep-search-warning" role="alert">
                 Partial estimate: {{ suggestion.failed_searches }} request(s) failed, {{ suggestion.skipped_searches }} were skipped, and {{ suggestion.truncated_searches }} query(ies) had more pages not fetched. Only returned listings were used.
               </div>
               <div class="market-suggestion-actions mt-2">
@@ -611,7 +615,7 @@ function buildChart() {
   const labels = ordered.map(r => formatChartDate(r.fetched_at))
   const datasets = [
     {
-      label: 'Loose',
+      label: 'Loose / Market',
       data: ordered.map(r => r.loose_price),
       borderColor: '#60a5fa',
       backgroundColor: 'transparent',
@@ -752,14 +756,35 @@ function priceSourceLabel(source) {
     pricecharting_local: 'PriceCharting · local catalog',
     pricecharting_scrape: 'PriceCharting · live scrape',
     ebay: 'eBay',
+    direct_ebay: 'eBay · direct Browse',
+    ebay_market: 'eBay · mixed-condition market',
+    ebay_loose: 'eBay · explicit Loose listings',
+    ebay_cib: 'eBay · CIB listings',
+    ebay_new: 'eBay · New condition listings',
     manual: 'Manual',
     'Start Value': 'Start Value'
   }
   return labels[source] || String(source || 'Unknown')
 }
 
+function marketSuggestionSourceLabel(suggestion) {
+  if (suggestion?.source === 'pricecharting') {
+    const source = suggestion.source_detail === 'local_catalog'
+      ? 'pricecharting_local'
+      : suggestion.source_detail === 'live_scrape'
+        ? 'pricecharting_scrape'
+        : 'pricecharting'
+    return priceSourceLabel(source)
+  }
+  if (suggestion?.source === 'ebay') return priceSourceLabel(suggestion.source_detail || 'ebay')
+  return priceSourceLabel(suggestion?.source)
+}
+
 function priceSourceClass(source) {
-  return String(source || '').startsWith('pricecharting_') ? 'source-pricecharting' : `source-${source}`
+  const value = String(source || '')
+  if (value.startsWith('pricecharting_')) return 'source-pricecharting'
+  if (value.startsWith('ebay_')) return 'source-ebay'
+  return `source-${value}`
 }
 
 function formatMatchScore(value) {
@@ -772,10 +797,38 @@ function formatMatchScore(value) {
 
 function entryDisplayValue(entry) {
   if (!entry) return '—'
-  if (entry.loose_price != null) return `Loose €${formatMoney(entry.loose_price)}`
-  if (entry.complete_price != null) return `CIB €${formatMoney(entry.complete_price)}`
-  if (entry.new_price != null) return `New €${formatMoney(entry.new_price)}`
-  return '—'
+  const source = String(entry.source || '')
+  const values = []
+  if (entry.loose_price != null) {
+    const label = source === 'ebay' || source === 'ebay_market' ? 'Market' : 'Loose'
+    values.push(`${label} €${formatMoney(entry.loose_price)}`)
+  }
+  if (entry.complete_price != null) values.push(`CIB €${formatMoney(entry.complete_price)}`)
+  if (entry.new_price != null) values.push(`New €${formatMoney(entry.new_price)}`)
+  return values.join(' · ') || '—'
+}
+
+function expandMarketSuggestions(data) {
+  const responseMetadata = { ...(data || {}) }
+  delete responseMetadata.suggestions
+  delete responseMetadata.price_options
+  const candidates = Array.isArray(data?.suggestions) && data.suggestions.length
+    ? data.suggestions
+    : [data]
+  return candidates.flatMap(candidate => {
+    const options = Array.isArray(candidate?.price_options) && candidate.price_options.length
+      ? candidate.price_options
+      : [candidate]
+    return options
+      .filter(option => option?.market_price != null)
+      .map(option => ({
+        ...responseMetadata,
+        ...candidate,
+        ...option,
+        source: candidate?.source || data?.source,
+        source_detail: candidate?.source_detail || data?.source_detail
+      }))
+  })
 }
 
 async function checkPrice() {
@@ -804,9 +857,7 @@ async function checkPrice() {
         priceError.value = data.error
       }
     } else {
-      marketSuggestions.value = Array.isArray(data.suggestions) && data.suggestions.length
-        ? data.suggestions
-        : [data]
+      marketSuggestions.value = expandMarketSuggestions(data)
       await loadPriceHistory()
     }
 } catch (e) {
@@ -836,9 +887,7 @@ async function checkPriceEbay() {
     if (data.error) {
       priceError.value = data.error
     } else {
-      marketSuggestions.value = Array.isArray(data.suggestions) && data.suggestions.length
-        ? data.suggestions
-        : [data]
+      marketSuggestions.value = expandMarketSuggestions(data)
       await loadPriceHistory()
     }
   } catch (e) {
@@ -1982,6 +2031,14 @@ onMounted(async () => {
 
 .market-suggestion-text {
   font-size: 0.9rem;
+}
+
+.market-suggestion-price {
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 0.88rem;
 }
 
 .market-match {

@@ -40,6 +40,20 @@ separate GTIN query, but reads only the first page of each. The diagnostics log
 counts returned and truncated searches; deep estimates are marked partial when
 the Browse API `next` link indicates an unfetched page.
 
+## Price estimates by condition
+
+PriceCharting presents each tier it actually returns from the local catalog and live scrape: Loose, CIB, and New. Missing tiers are not inferred from another value.
+
+The eBay estimate keeps a median for all accepted listings, labelled **Market median (mixed conditions)**. It is not a Loose-only estimate. Additional selectable estimates are created only when the listing evidence supports them:
+
+- **Loose** requires explicit game-title wording such as `loose`, `disc only`, `cartridge only`, or `game only`.
+- **CIB** requires explicit title wording such as `CIB`, `complete in box`, or `complete with box/case`. A used-condition code, or a title that only mentions a box/manual without saying the game is complete, does not establish CIB. Box/case/manual-only and replacement packaging listings are excluded from game estimates.
+- **New** uses the Browse `conditionId` value `1000`; eBay defines this as brand-new and unopened in original retail packaging. `1500` (“New other” / open box or packaging missing) is not treated as sealed New.
+
+These eBay condition-specific buckets are conservative: unclassified listings still contribute to the overall market median, but are not assigned to Loose/CIB/New. The GUI shows the sample count for each tier, and a tier with no usable listings is omitted. Existing price filters, EUR validation, optional shipping behavior, and outlier trimming apply before each median is calculated. CIB/Loose title cues are used only for game listings; New condition ID `1000` can be used for other supported item types as well. Seller titles can be incomplete or wrong, so estimates are suggestions and should be checked against the listings.
+
+See eBay's [condition ID definitions](https://developer.ebay.com/api-docs/sell/static/metadata/condition-id-values.html) and the Browse API [ItemSummary type](https://developer.ebay.com/api-docs/buy/browse/types/gct:ItemSummary) for the documented condition fields.
+
 Never publish API credentials, tokens, database files, backups, or personal
 deployment settings.
 
