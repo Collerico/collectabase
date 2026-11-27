@@ -418,7 +418,7 @@ class ApiSmokeTest(unittest.TestCase):
         history = self.client.get(f"/api/games/{game_id}/price-history")
         self.assertEqual(history.status_code, 200)
         entries = history.json()
-        self.assertTrue(any(e.get("source") == "pricecharting" for e in entries))
+        self.assertTrue(any(e.get("source") == "pricecharting_local" for e in entries))
 
         listed = self.client.get("/api/games")
         self.assertEqual(listed.status_code, 200)
@@ -453,7 +453,8 @@ class ApiSmokeTest(unittest.TestCase):
             r = self.client.post(f"/api/games/{game_id}/fetch-market-price")
         self.assertEqual(r.status_code, 200)
         data = r.json()
-        self.assertIn("error", data)
+        self.assertIn("info", data)
+        self.assertEqual(data.get("suggested_action"), "ebay")
         self.assertNotIn("market_price", data)
 
         self.client.delete(f"/api/games/{game_id}")

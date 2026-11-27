@@ -12,7 +12,7 @@ def setUpModule():
 
 
 class MarketPriceSourceTests(unittest.TestCase):
-    def _run_lookup(self, *, source=None, item_type="game", catalog=None, scrape=None, ebay=None):
+    def _run_lookup(self, *, source="pricecharting", item_type="game", catalog=None, scrape=None, ebay=None):
         game = {
             "title": "The Legend of Zelda Breath of the Wild",
             "platform_name": "Nintendo Switch",
@@ -35,9 +35,9 @@ class MarketPriceSourceTests(unittest.TestCase):
             patch.object(price_tracker, "get_db", return_value=db_context),
         ):
             result = asyncio.run(price_tracker.fetch_market_price(17, source=source))
-        return result, catalog_lookup, scrape_mock, ebay_mock
+        return result, catalog_lookup, scrape_mock, ebay_mock, fake_db
 
-    def test_catalog_hit_identifies_local_catalog_without_scrape_or_ebay(self):
+    def test_catalog_and_live_scrape_both_run_and_are_returned_separately(self):
         catalog = {
             "loose_eur": 21.0,
             "cib_eur": 30.0,
@@ -47,13 +47,40 @@ class MarketPriceSourceTests(unittest.TestCase):
             "platform": "Nintendo Switch",
             "match_score": 0.99,
         }
-        result, catalog_lookup, scrape, ebay = self._run_lookup(catalog=catalog)
+        scrape_result = {
+            "loose_usd": 25.0,
+            "cib_usd": 35.0,
+            "new_usd": 50.0,
+            "pricecharting_id": "pc-1-live",
+        }
+        result, catalog_lookup, scrape, ebay, fake_db = self._run_lookup(
+            catalog=catalog, scrape=scrape_result
+        )
 
         self.assertEqual(result["source"], "pricecharting")
-        self.assertEqual(result["source_detail"], "local_catalog")
-        catalog_lookup.assert_called_once()
-        scrape.assert_not_awaited()
+        self.assertEqual(result["source_detail"], "combined")
+        self.assertEqual(
+            [candidate["source_detail"] for candidate in result["suggestions"]],
+            ["local_catalog", "live_scrape"],
+        )
+        self.assertEqual(result["suggestions"][0]["market_price"], 21.0)
+        self.assertEqual(result["market_price"], result["suggestions"][1]["market_price"])
+        self.assertEqual(catalog_lookup.call_count, 1)
+        scrape.assert_awaited_once()
         ebay.assert_not_awaited()
+        history_writes = [
+            call for call in fake_db.execute.call_args_list
+            if "INSERT INTO price_history" in call.args[0]
+        ]
+        self.assertEqual(len(history_writes), 2)
+        self.assertEqual(
+            [call.args[1][1] for call in history_writes],
+            ["pricecharting_local", "pricecharting_scrape"],
+        )
+        self.assertEqual(
+            [call.args[1][2] for call in history_writes],
+            [candidate["market_price"] for candidate in result["suggestions"]],
+        )
 
     def test_scrape_hit_identifies_live_pricecharting_source_without_ebay(self):
         scrape_result = {
@@ -62,7 +89,7 @@ class MarketPriceSourceTests(unittest.TestCase):
             "new_usd": 30.0,
             "pricecharting_id": "pc-2",
         }
-        result, catalog_lookup, scrape, ebay = self._run_lookup(scrape=scrape_result)
+        result, catalog_lookup, scrape, ebay, fake_db = self._run_lookup(scrape=scrape_result)
 
         self.assertEqual(result["source"], "pricecharting")
         self.assertEqual(result["source_detail"], "live_scrape")
@@ -70,36 +97,22 @@ class MarketPriceSourceTests(unittest.TestCase):
         scrape.assert_awaited_once()
         ebay.assert_not_awaited()
 
-    def test_pricecharting_path_labels_existing_ebay_fallback(self):
-        ebay_result = {
-            "market_price": 39.4,
-            "sample_size": 2,
-            "price_min": 22.0,
-            "price_max": 56.8,
-        }
-        result, _catalog_lookup, scrape, ebay = self._run_lookup(ebay=ebay_result)
+    def test_no_pricecharting_result_returns_info_suggesting_ebay_without_fallback(self):
+        result, _catalog_lookup, scrape, ebay, _fake_db = self._run_lookup()
 
-        self.assertEqual(result["source"], "ebay")
-        self.assertEqual(result["source_detail"], "automatic_ebay_fallback")
+        self.assertEqual(result["suggested_action"], "ebay")
+        self.assertIn("Try the eBay button", result["info"])
         scrape.assert_awaited_once()
-        ebay.assert_awaited_once()
+        ebay.assert_not_awaited()
 
-    def test_unsupported_pricecharting_type_is_labeled_as_automatic_ebay_fallback(self):
-        ebay_result = {
-            "market_price": 15.0,
-            "sample_size": 1,
-            "price_min": 15.0,
-            "price_max": 15.0,
-        }
-        result, catalog_lookup, scrape, ebay = self._run_lookup(
-            item_type="manga", ebay=ebay_result
-        )
+    def test_unsupported_pricecharting_type_suggests_direct_ebay_without_fallback(self):
+        result, catalog_lookup, scrape, ebay, fake_db = self._run_lookup(item_type="manga")
 
-        self.assertEqual(result["source"], "ebay")
-        self.assertEqual(result["source_detail"], "automatic_ebay_fallback")
+        self.assertEqual(result["suggested_action"], "ebay")
+        self.assertIn("Try the eBay button", result["info"])
         catalog_lookup.assert_not_called()
         scrape.assert_not_awaited()
-        ebay.assert_awaited_once()
+        ebay.assert_not_awaited()
 
     def test_direct_ebay_path_is_distinguished_from_fallback(self):
         ebay_result = {
@@ -108,7 +121,7 @@ class MarketPriceSourceTests(unittest.TestCase):
             "price_min": 22.0,
             "price_max": 56.8,
         }
-        result, catalog_lookup, scrape, ebay = self._run_lookup(
+        result, catalog_lookup, scrape, ebay, fake_db = self._run_lookup(
             source="ebay", catalog={"loose_eur": 10.0}, ebay=ebay_result
         )
 
