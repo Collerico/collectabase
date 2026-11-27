@@ -312,7 +312,8 @@
 
           <div v-if="marketSuggestion" class="market-suggestion mt-2">
             <div v-if="marketSuggestion.source === 'pricecharting'" class="market-suggestion-text">
-              📊 €{{ formatMoney(marketSuggestion.market_price) }} (PriceCharting - Loose)
+              📊 €{{ formatMoney(marketSuggestion.market_price) }}
+              (PriceCharting{{ marketSuggestion.source_detail === 'local_catalog' ? ' · local catalog' : marketSuggestion.source_detail === 'live_scrape' ? ' · live scrape' : '' }} - Loose)
               <div v-if="marketSuggestion.matched_title" class="market-match">
                 Match: {{ marketSuggestion.matched_title }}
                 <span v-if="marketSuggestion.matched_platform"> ({{ marketSuggestion.matched_platform }})</span>
@@ -321,7 +322,9 @@
             </div>
             <div v-else-if="marketSuggestion.source === 'ebay'" class="market-suggestion-text">
               🛒 ~€{{ formatMoney(marketSuggestion.market_price) }}
-              (Median of {{ marketSuggestion.sample_size }} eBay listings, €{{ formatMoney(marketSuggestion.price_min) }}-€{{ formatMoney(marketSuggestion.price_max) }})
+              <span v-if="marketSuggestion.source_detail === 'automatic_ebay_fallback'">(Automatic lookup used eBay fallback · median of {{ marketSuggestion.sample_size }} listings, €{{ formatMoney(marketSuggestion.price_min) }}-€{{ formatMoney(marketSuggestion.price_max) }})</span>
+              <span v-else-if="marketSuggestion.source_detail === 'direct_ebay'">(Direct eBay search · median of {{ marketSuggestion.sample_size }} listings, €{{ formatMoney(marketSuggestion.price_min) }}-€{{ formatMoney(marketSuggestion.price_max) }})</span>
+              <span v-else>(eBay listings · median of {{ marketSuggestion.sample_size }} listings, €{{ formatMoney(marketSuggestion.price_min) }}-€{{ formatMoney(marketSuggestion.price_max) }})</span>
             </div>
             <div v-if="marketSuggestion.search_complete === false" class="deep-search-warning" role="alert">
               Partial estimate: {{ marketSuggestion.failed_searches }} request(s) failed, {{ marketSuggestion.skipped_searches }} were skipped, and {{ marketSuggestion.truncated_searches }} query(ies) had more pages not fetched. Only returned listings were used.
