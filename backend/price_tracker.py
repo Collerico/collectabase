@@ -42,6 +42,19 @@ def _get_game_for_price_lookup(game_id: int):
     return dict_from_row(row) if row else None
 
 
+def _price_options_from_values(loose, complete, new):
+    """Return selectable condition-tier estimates without inventing missing values."""
+    options = []
+    for condition, label, value in (
+        ("loose", "Loose", loose),
+        ("complete", "CIB", complete),
+        ("new", "New", new),
+    ):
+        if value is not None:
+            options.append({"condition": condition, "label": label, "market_price": value})
+    return options
+
+
 def _ebay_search_details(game: dict) -> dict:
     """Return product-only attributes safe to send to the eBay search provider."""
     return {
@@ -93,15 +106,44 @@ async def fetch_market_price(
                 "truncated_searches": ebay.get("truncated_searches", 0),
             }
         if ebay:
+            price_options = ebay.get("price_options") or [{
+                "condition": "market",
+                "label": "Market median (mixed conditions)",
+                "market_price": ebay["market_price"],
+                "sample_size": ebay["sample_size"],
+                "price_min": ebay["price_min"],
+                "price_max": ebay["price_max"],
+            }]
+            history_sources = {
+                "market": ("ebay_market", "loose_price"),
+                "loose": ("ebay_loose", "loose_price"),
+                "complete": ("ebay_cib", "complete_price"),
+                "new": ("ebay_new", "new_price"),
+            }
+            suggestions = []
             with get_db() as db:
-                db.execute(
-                    """
-                    INSERT INTO price_history
-                        (game_id, source, loose_price, complete_price, new_price, eur_rate)
-                    VALUES (?, 'ebay', ?, NULL, NULL, 1.0)
-                    """,
-                    (game_id, ebay["market_price"]),
-                )
+                for option in price_options:
+                    condition = option.get("condition")
+                    history_source = history_sources.get(condition)
+                    price = option.get("market_price")
+                    if history_source and price is not None:
+                        source_name, price_column = history_source
+                        loose_price = price if price_column == "loose_price" else None
+                        complete_price = price if price_column == "complete_price" else None
+                        new_price = price if price_column == "new_price" else None
+                        db.execute(
+                            """
+                            INSERT INTO price_history
+                                (game_id, source, loose_price, complete_price, new_price, eur_rate)
+                            VALUES (?, ?, ?, ?, ?, 1.0)
+                            """,
+                            (game_id, source_name, loose_price, complete_price, new_price),
+                        )
+                    suggestions.append({
+                        **option,
+                        "source": "ebay",
+                        "source_detail": "direct_ebay",
+                    })
                 db.commit()
             result = {
                 "market_price": ebay["market_price"],
@@ -110,6 +152,11 @@ async def fetch_market_price(
                 "sample_size": ebay["sample_size"],
                 "price_min": ebay["price_min"],
                 "price_max": ebay["price_max"],
+                "suggestions": [{
+                    "source": "ebay",
+                    "source_detail": "direct_ebay",
+                    "price_options": suggestions,
+                }],
             }
             if "search_complete" in ebay:
                 result["search_complete"] = ebay["search_complete"]
@@ -190,6 +237,12 @@ async def fetch_market_price(
                 "pricecharting_id": scraped.get("pricecharting_id"),
             },
         })
+
+    for candidate in candidates:
+        history = candidate["_history"]
+        candidate["price_options"] = _price_options_from_values(
+            history["loose"], history["complete"], history["new"]
+        )
 
     if candidates:
         # Store each provider observation separately so either selectable quote

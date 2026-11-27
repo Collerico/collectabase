@@ -824,6 +824,57 @@ class EbayPriceProviderTests(unittest.TestCase):
 
 
 
+    def test_price_options_split_mixed_loose_cib_and_new_using_explicit_evidence(self):
+        def listing(title, condition_id, price):
+            return {
+                "title": title,
+                "conditionId": condition_id,
+                "price": {"value": str(price), "currency": "EUR"},
+            }
+
+        items = [
+            listing("The Legend of Zelda Breath of the Wild Nintendo Switch", "3000", 40),
+            listing("The Legend of Zelda Breath of the Wild Nintendo Switch CIB complete in box", "3000", 60),
+            listing("The Legend of Zelda Breath of the Wild Nintendo Switch", "1000", 100),
+            listing("The Legend of Zelda Breath of the Wild Nintendo Switch new open box", "1500", 80),
+            listing("The Legend of Zelda Breath of the Wild Nintendo Switch loose cartridge only", "3000", 20),
+            listing("The Legend of Zelda Breath of the Wild Nintendo Switch box and manual", "3000", 70),
+            listing("The Legend of Zelda Breath of the Wild Nintendo Switch box only", "3000", 10),
+        ]
+
+        result, _captured = self._search_items(items)
+
+        options = {option["condition"]: option for option in result["price_options"]}
+        self.assertEqual(result["market_price"], 65.0)
+        self.assertEqual(result["sample_size"], 6)
+        self.assertEqual(options["market"]["sample_size"], 6)
+        self.assertEqual(options["loose"]["market_price"], 20.0)
+        self.assertEqual(options["loose"]["sample_size"], 1)
+        self.assertEqual(options["complete"]["market_price"], 60.0)
+        self.assertEqual(options["complete"]["sample_size"], 1)
+        self.assertEqual(options["new"]["market_price"], 100.0)
+        self.assertEqual(options["new"]["sample_size"], 1)
+
+    def test_box_only_listing_is_excluded_from_game_market_estimate(self):
+        items = [
+            {
+                "title": "The Legend of Zelda Breath of the Wild Nintendo Switch",
+                "conditionId": "3000",
+                "price": {"value": "50.00", "currency": "EUR"},
+            },
+            {
+                "title": "The Legend of Zelda Breath of the Wild Nintendo Switch box only",
+                "conditionId": "3000",
+                "price": {"value": "5.00", "currency": "EUR"},
+            },
+        ]
+
+        result, _captured = self._search_items(items)
+
+        self.assertEqual(result["market_price"], 50.0)
+        self.assertEqual(result["sample_size"], 1)
+
+
 
 if __name__ == "__main__":
     unittest.main()

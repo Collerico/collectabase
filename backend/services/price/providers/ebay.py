@@ -28,6 +28,10 @@ _BUNDLE_KEYWORDS_ALWAYS = {
 _BUNDLE_KEYWORDS_GAME_ONLY = {
     "console", "konsole", "system", "hardware",
     "controller", "zubehör", "accessory", "accessories",
+    "box only", "case only", "manual only", "replacement box", "replacement case",
+}
+_GAME_ONLY_EXACT_KEYWORDS = {
+    "box only", "case only", "manual only", "replacement box", "replacement case",
 }
 
 # ── Item types that are collectibles (not platform-bound games) ──
@@ -78,7 +82,12 @@ def _title_exclusion_reason(item_title: str, game_title: str, item_type: str = "
     norm_game = _normalise(game_title)
 
     for keyword in _build_bundle_keywords(item_type):
-        if keyword in norm_item:
+        matched = (
+            bool(re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", norm_item))
+            if keyword in _GAME_ONLY_EXACT_KEYWORDS
+            else keyword in norm_item
+        )
+        if matched:
             return "keyword_bundle_or_defect"
 
     if re.search(r"\d+\s*(spiele|games|titles|stück|stk)", norm_item):
@@ -109,6 +118,44 @@ def _condition_ids_for_item_type(item_type: str) -> set[str]:
     if kind in {"console", "controller", "accessory"}:
         return {"1000", "1500", "2000", "2010", "2020", "2030", "2500", "2750", "3000"}
     return {"2750", "3000"}
+
+
+def _classify_listing_tier(item: dict, item_type: str) -> Optional[str]:
+    """Classify only listing tiers supported by explicit eBay/title evidence."""
+    condition_id = str(item.get("conditionId") or "").strip()
+    if condition_id == "1000":
+        return "new"
+
+    if (item_type or "game").strip().lower() not in {"game", ""}:
+        return None
+
+    title = _normalise(item.get("title", ""))
+    # Exclude empty packaging and replacement-part listings from condition buckets.
+    if re.search(
+        r"\b(?:box|case|manual)\s+only\b|\breplacement\s+(?:box|case)\b|"
+        r"\bbox\s*(?:and|&|\+)\s*manual\s+only\b",
+        title,
+    ):
+        return None
+
+    is_complete = bool(re.search(
+        r"\bcib\b|\bcomplete\s+in\s+(?:the\s+)?box\b|"
+        r"\bcomplete\s+with\s+(?:the\s+)?(?:box|case)"
+        r"(?:\s*(?:and|&|\+)\s*(?:manual|instructions))?\b",
+        title,
+    ))
+    is_loose = bool(re.search(
+        r"\bloose\b|\bdisc\s+only\b|\bcartridge\s+only\b|"
+        r"\bgame\s+only\b|\b(?:no|without)\s+(?:the\s+)?(?:box|case)\b",
+        title,
+    ))
+    if is_complete and is_loose:
+        return None
+    if is_complete:
+        return "complete"
+    if is_loose:
+        return "loose"
+    return None
 
 
 def _ebay_shipping_enabled() -> bool:
@@ -348,7 +395,12 @@ def _title_exclusion_reason(
     norm_item = _normalise(item_title)
 
     for keyword in _build_bundle_keywords(item_type):
-        if keyword in norm_item:
+        matched = (
+            bool(re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", norm_item))
+            if keyword in _GAME_ONLY_EXACT_KEYWORDS
+            else keyword in norm_item
+        )
+        if matched:
             return "keyword_bundle_or_defect"
 
     if re.search(r"\d+\s*(spiele|games|titles|stück|stk)", norm_item):
@@ -432,6 +484,7 @@ async def fetch_ebay_market_price(
     exclusions = Counter()
     shipping_status = Counter()
     prices: list[float] = []
+    tier_prices: dict[str, list[float]] = {"loose": [], "complete": [], "new": []}
     returned_count = 0
     truncated_searches = 0
     unique_items = {}
@@ -557,15 +610,19 @@ async def fetch_ebay_market_price(
         if include_shipping:
             shipping_cost, shipping_reason = _shipping_price(item)
             shipping_status[shipping_reason] += 1
-            prices.append(item_price + shipping_cost if shipping_cost is not None else item_price)
+            comparable_price = item_price + shipping_cost if shipping_cost is not None else item_price
         else:
             shipping_status["disabled"] += 1
-            prices.append(item_price)
+            comparable_price = item_price
+        prices.append(comparable_price)
+        tier = _classify_listing_tier(item, item_type)
+        if tier:
+            tier_prices[tier].append(comparable_price)
 
     median_price, trimmed, min_price, max_price = _trim_outliers_and_median(prices)
     used_count = len(trimmed)
     logger.info(
-        "eBay price search diagnostics marketplace=%s search_mode=%s api_requests=%d api_failed=%d api_skipped=%d api_truncated=%d deadline_reached=%s rate_limited=%s authorization_rejected=%s api_returned=%d unique_results=%d api_page_limit=200 eligible=%d used=%d trimmed_outliers=%d exclusions=%s shipping_enabled=%s shipping=%s",
+        "eBay price search diagnostics marketplace=%s search_mode=%s api_requests=%d api_failed=%d api_skipped=%d api_truncated=%d deadline_reached=%s rate_limited=%s authorization_rejected=%s api_returned=%d unique_results=%d api_page_limit=200 eligible=%d used=%d trimmed_outliers=%d exclusions=%s shipping_enabled=%s shipping=%s condition_tiers=%s",
         marketplace_id,
         "deep" if deep_search else "standard",
         requests_made,
@@ -583,6 +640,7 @@ async def fetch_ebay_market_price(
         ",".join(f"{reason}:{count}" for reason, count in sorted(exclusions.items())) or "none",
         include_shipping,
         ",".join(f"{reason}:{count}" for reason, count in sorted(shipping_status.items())) or "none",
+        ",".join(f"{tier}:{len(values)}" for tier, values in tier_prices.items()) or "none",
     )
     if median_price is None:
         if deep_search and (failed_requests or deadline_exhausted or truncated_searches):
@@ -605,12 +663,48 @@ async def fetch_ebay_market_price(
             }
         return None
 
+    price_options = [{
+        "condition": "market",
+        "label": "Market median (mixed conditions)",
+        "market_price": round(median_price, 2),
+        "sample_size": used_count,
+        "price_min": round(min_price, 2),
+        "price_max": round(max_price, 2),
+    }]
+    tier_labels = {
+        "loose": "Loose (explicit listing text)",
+        "complete": "CIB (explicit title text)",
+        "new": "New (eBay condition ID 1000)",
+    }
+    tier_summaries = {}
+    for tier, tier_values in tier_prices.items():
+        tier_median, tier_trimmed, tier_min, tier_max = _trim_outliers_and_median(tier_values)
+        if tier_median is None:
+            continue
+        tier_sample_size = len(tier_trimmed)
+        tier_summary = {
+            "condition": tier,
+            "label": tier_labels[tier],
+            "market_price": round(tier_median, 2),
+            "sample_size": tier_sample_size,
+            "price_min": round(tier_min, 2),
+            "price_max": round(tier_max, 2),
+        }
+        price_options.append(tier_summary)
+        tier_summaries[tier] = tier_summary
+
     result = {
         "market_price": round(median_price, 2),
         "sample_size": used_count,
         "price_min": round(min_price, 2),
         "price_max": round(max_price, 2),
+        "price_options": price_options,
     }
+    for tier in ("loose", "complete", "new"):
+        summary = tier_summaries.get(tier)
+        if summary:
+            result[f"{tier}_price" if tier != "complete" else "complete_price"] = summary["market_price"]
+            result[f"{tier}_sample_size" if tier != "complete" else "complete_sample_size"] = summary["sample_size"]
     if deep_search:
         result["search_complete"] = (
             failed_requests == 0 and skipped_requests == 0
