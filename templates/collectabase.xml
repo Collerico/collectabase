@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Collectabase</Name>
+  <Repository>ghcr.io/collerico/collectabase:latest</Repository>
+  <Registry>ghcr.io</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Collerico/collectabase/issues</Support>
+  <Project>https://github.com/Collerico/collectabase</Project>
+  <Overview>Self-hosted collection manager for games, consoles, figures, comics, and more.</Overview>
+  <Description>Collectabase is a self-hosted collection manager with local image storage, collection analytics, and optional market-price integrations. App data, uploaded images, and automatic backups are stored in persistent host paths. Configure provider credentials in the Collectabase Settings page. Keep SQLite data on local storage, not an SMB share.</Description>
+  <Category>Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8000]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/Collerico/collectabase/main/templates/collectabase.xml</TemplateURL>
+
+  <Config Name="Web UI" Target="8000" Default="8000" Mode="tcp" Description="Collectabase web interface" Type="Port" Display="always" Required="true" Mask="false">8000</Config>
+  <Config Name="Application data" Target="/app/data" Default="/mnt/user/appdata/collectabase/data" Mode="rw" Description="SQLite database and application state. Use local storage, not an SMB share." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/collectabase/data</Config>
+  <Config Name="Uploaded images" Target="/app/uploads" Default="/mnt/user/appdata/collectabase/uploads" Mode="rw" Description="Locally cached cover and uploaded images." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/collectabase/uploads</Config>
+  <Config Name="Automatic backups" Target="/app/backups" Default="/mnt/user/appdata/collectabase/backups" Mode="rw" Description="Daily automatic backup archives." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/collectabase/backups</Config>
+  <Config Name="Time zone" Target="TZ" Default="Europe/Rome" Mode="" Description="Container time zone." Type="Variable" Display="always" Required="true" Mask="false">Europe/Rome</Config>
+  <Config Name="eBay marketplace" Target="EBAY_MARKETPLACE_ID" Default="EBAY_IT" Mode="" Description="Marketplace used for eBay price lookups." Type="Variable" Display="always" Required="false" Mask="false">EBAY_IT</Config>
+  <Config Name="Admin API key (optional)" Target="ADMIN_API_KEY" Default="" Mode="" Description="Optional key to protect write operations when exposing the instance beyond your LAN." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+</Container>
