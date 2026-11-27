@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <CommunityApplications>
-  <Profile>Community Applications template for Collectabase, a self-hosted collection manager maintained by Collerico. For installation help and bug reports, use the project GitHub repository.</Profile>
+  <Profile>Collectabase is a self-hosted collection manager for games, consoles, figures, comics, vinyl and more. Catalogue your items, track their condition and completeness, scan barcodes, manage wishlists, and follow price estimates and history from PriceCharting and eBay, all on your own server.</Profile>
   <Icon>https://raw.githubusercontent.com/Collerico/collectabase/main/frontend/public/icons/android-chrome-512x512.png</Icon>
   <WebPage>https://github.com/Collerico/collectabase</WebPage>
 </CommunityApplications>
